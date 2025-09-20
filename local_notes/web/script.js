@@ -9,9 +9,15 @@
   const llmModelEl = document.getElementById('llmModel');
   const convListEl = document.getElementById('conversations');
   const newConvBtn = document.getElementById('newConv');
+  const settingsToggle = document.getElementById('settingsToggle');
+  const controlsInline = document.getElementById('controlsInline');
 
   let currentConv = null;
   let currentStream = null;
+  // Configure markdown rendering
+  try {
+    marked.setOptions({ gfm: true, breaks: true, smartLists: true });
+  } catch {}
   // Load settings
   try {
     const saved = JSON.parse(localStorage.getItem('ln_settings') || '{}');
@@ -22,6 +28,21 @@
   function saveSettings() {
     const s = { k: Number(kEl.value||'6'), provider: providerEl.value||'ollama', llmModel: llmModelEl.value||'' };
     localStorage.setItem('ln_settings', JSON.stringify(s));
+  }
+
+  // Heuristic normalizer to improve streamed markdown readability
+  function normalizeMd(text) {
+    if (!text) return '';
+    let t = text;
+    // Ensure a newline before list markers if they follow text without a break: "text:* item" => "text:\n* item"
+    t = t.replace(/(:)\s*\*/g, '$1\n*');
+    // Also support dashes as list markers
+    t = t.replace(/(:)\s*-\s+/g, '$1\n- ');
+    // Ensure headings start on new lines: "text## Heading" => "text\n\n## Heading"
+    t = t.replace(/([^\n])(#\s?#+\s)/g, '$1\n\n$2');
+    // Compact multiple blank lines
+    t = t.replace(/\n{3,}/g, '\n\n');
+    return t;
   }
   kEl.addEventListener('change', saveSettings);
   providerEl.addEventListener('change', saveSettings);
@@ -125,6 +146,10 @@
       const src = document.createElement('div');
       src.className = 'sources';
       wrap.appendChild(src);
+      // snippets container lives right after sources
+      const snippets = document.createElement('div');
+      snippets.className = 'snippets';
+      wrap.appendChild(snippets);
     } else {
       wrap.textContent = content;
     }
@@ -138,7 +163,7 @@
     const prev = md.getAttribute('data-buf') || '';
     const next = prev + (delta || '');
     md.setAttribute('data-buf', next);
-    md.innerHTML = DOMPurify.sanitize(marked.parse(next));
+    md.innerHTML = DOMPurify.sanitize(marked.parse(normalizeMd(next)));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -149,7 +174,7 @@
     md.removeAttribute('data-stream');
     md.removeAttribute('data-buf');
     // Ensure final render is set
-    md.innerHTML = DOMPurify.sanitize(marked.parse(buf));
+    md.innerHTML = DOMPurify.sanitize(marked.parse(normalizeMd(buf)));
   }
 
   async function send() {
@@ -191,6 +216,8 @@
           const snippet = String(s.text);
           chip.title = snippet.length > 500 ? (snippet.slice(0, 500) + '…') : snippet;
         }
+        // clickable expand/collapse
+        chip.addEventListener('click', () => toggleSnippet(assistantBubble, s));
         srcContainer.appendChild(chip);
       });
     };
@@ -224,6 +251,9 @@
 
   newConvBtn.addEventListener('click', createConversation);
   sendBtn.addEventListener('click', send);
+  settingsToggle.addEventListener('click', () => {
+    controlsInline.classList.toggle('hidden');
+  });
   stopBtn.addEventListener('click', () => {
     if (currentStream) {
       currentStream.close();
@@ -311,5 +341,36 @@
 
   function escapeHtml(s) {
     return s.replace(/[&<>\"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;','\'':'&#39;'}[c]));
+  }
+
+  function toggleSnippet(bubble, source) {
+    const container = bubble.querySelector('.snippets');
+    if (!container) return;
+    const id = `snip-${source.rank}-${source.chunk}`;
+    let card = container.querySelector(`[data-id="${id}"]`);
+    if (card) {
+      card.remove();
+      return;
+    }
+    card = document.createElement('div');
+    card.className = 'snippet-card';
+    card.setAttribute('data-id', id);
+    const title = document.createElement('div');
+    title.className = 'snippet-title';
+    title.textContent = `${source.title}  •  Folder: ${source.folder}  •  Chunk: ${source.chunk}`;
+    const pre = document.createElement('pre');
+    pre.textContent = source.text || '';
+    const actions = document.createElement('div');
+    actions.className = 'snippet-actions';
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(source.text || ''); copyBtn.textContent = 'Copied'; setTimeout(()=>copyBtn.textContent='Copy', 1000);} catch {}
+    });
+    actions.appendChild(copyBtn);
+    card.appendChild(title);
+    card.appendChild(pre);
+    card.appendChild(actions);
+    container.appendChild(card);
   }
 })();

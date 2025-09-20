@@ -20,7 +20,7 @@
     </aside>
     <section class="chat">
       <div class="chat-header">
-        <div class="controls-inline">
+        <div class="controls-inline" id="controlsInline">
           <label>Top K <input id="k" type="number" min="1" max="20" value="6" /></label>
           <label>Provider
             <select id="provider">
@@ -31,6 +31,7 @@
           <label>Model <input id="llmModel" type="text" placeholder="(default)" /></label>
           <span id="status"></span>
         </div>
+        <button id="settingsToggle" class="secondary" title="Toggle settings">⚙️</button>
       </div>
       <div id="messages" class="messages"></div>
       <div class="composer">

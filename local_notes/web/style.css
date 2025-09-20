@@ -14,8 +14,10 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 .chat{display:flex;flex-direction:column}
 .chat-header{border-bottom:1px solid #22283a;padding:10px}
 .controls-inline{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.controls-inline.hidden{display:none}
 .controls-inline label{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px}
 .controls-inline input,.controls-inline select{padding:6px;border-radius:6px;border:1px solid #22283a;background:#0e1220;color:var(--text)}
+.chat-header .secondary{background:transparent;color:var(--muted);border:1px solid #22283a;border-radius:8px;padding:6px 10px;cursor:pointer;margin-left:auto}
 .messages{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
 .bubble{max-width:70%;padding:10px 12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.15)}
 .user{align-self:flex-end;background:#1f2a44;border:1px solid #283455}
@@ -28,6 +30,12 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 .assistant .markdown ul{padding-left:20px}
 .sources{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .source-chip{background:#0e1220;border:1px solid #22283a;color:var(--muted);padding:4px 8px;border-radius:999px;font-size:12px}
+.source-chip{cursor:pointer}
+.snippet-card{margin-top:8px;background:#101525;border:1px solid #22283a;border-radius:8px;padding:10px}
+.snippet-card .snippet-title{color:var(--muted);font-size:12px;margin-bottom:6px}
+.snippet-card pre{background:#0e1220;border:1px solid #22283a;border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-word}
+.snippet-actions{display:flex;gap:8px;margin-top:6px}
+.snippet-actions button{background:transparent;color:var(--muted);border:1px solid #22283a;border-radius:6px;padding:4px 8px;cursor:pointer}
 
 .composer{display:flex;gap:8px;padding:12px;border-top:1px solid #22283a}
 .composer textarea{flex:1;resize:none;padding:10px;border-radius:8px;border:1px solid #22283a;background:#0e1220;color:var(--text)}

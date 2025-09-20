@@ -38,6 +38,61 @@ def load_vectorstore(store_dir: str, embed_model: str) -> FAISS:
     return vs
 
 
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def _lexical_score(text: str, query: str) -> float:
+    """Lightweight lexical score: try RapidFuzz; fallback to Jaccard overlap."""
+    try:
+        from rapidfuzz import fuzz  # type: ignore
+
+        return float(fuzz.token_set_ratio(query or "", text or "")) / 100.0
+    except Exception:
+        q = _tokenize(query)
+        t = _tokenize(text)
+        if not q or not t:
+            return 0.0
+        inter = len(q & t)
+        union = len(q | t)
+        return inter / union
+
+
+def _rrf_merge(vector_ranked: list, lexical_ranked: list, key_fn) -> list:
+    """Reciprocal Rank Fusion merge of two rankings.
+
+    key_fn extracts a stable key per item. Items are the original doc objects.
+    """
+    K = 60  # rrf constant
+    scores: dict[str, float] = {}
+    for idx, item in enumerate(vector_ranked, start=1):
+        scores[key_fn(item)] = scores.get(key_fn(item), 0.0) + 1.0 / (K + idx)
+    for idx, item in enumerate(lexical_ranked, start=1):
+        scores[key_fn(item)] = scores.get(key_fn(item), 0.0) + 1.0 / (K + idx)
+    # stable order: by fused score desc, then by vector rank
+    vec_pos = {key_fn(it): i for i, it in enumerate(vector_ranked)}
+    merged = sorted(vector_ranked, key=lambda it: (-scores.get(key_fn(it), 0.0), vec_pos.get(key_fn(it), 1e9)))
+    # Append any items only in lexical list (not present in vector list)
+    vec_keys = set(vec_pos.keys())
+    for it in lexical_ranked:
+        k = key_fn(it)
+        if k not in vec_keys:
+            merged.append(it)
+    return merged
+
+
+def _hybrid_retrieve(vs: FAISS, query: str, k: int, fetch_k: int) -> list:
+    """Vector + lexical (RRF) hybrid retrieval over a candidate pool from FAISS."""
+    pool = vs.similarity_search_with_score(query, k=fetch_k)
+    docs = [d for d, _ in pool]
+    # lexical ranking over the same pool
+    docs_lex = sorted(docs, key=lambda d: _lexical_score(d.page_content or "", query), reverse=True)
+    # fused order
+    key_fn = lambda d: f"{d.metadata.get('folder','')}::{d.metadata.get('title','')}::{d.metadata.get('chunk',0)}"
+    fused = _rrf_merge(docs, docs_lex, key_fn)
+    return fused[:k]
+
+
 def search_index(
     query: str,
     store_dir: str,
@@ -48,9 +103,14 @@ def search_index(
     """Search the FAISS index and return list of dicts with metadata and snippet."""
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
-    docs_and_scores = vs.similarity_search_with_score(query, k=k)
+    # Hybrid retrieval: vector + lexical with RRF, from a larger pool
+    fetch_k = max(20, k * 8)
+    pool = vs.similarity_search_with_score(query, k=fetch_k)
+    score_map = {d.page_content: float(s) for d, s in pool}
+    docs_ranked = _hybrid_retrieve(vs, query, k=k, fetch_k=fetch_k)
     out: List[Dict[str, Any]] = []
-    for rank, (doc, score) in enumerate(docs_and_scores, start=1):
+    for rank, doc in enumerate(docs_ranked, start=1):
+        score = score_map.get(doc.page_content, 0.0)
         m = doc.metadata or {}
         content = doc.page_content or ""
         snippet = content[:max_chars] + ("…" if len(content) > max_chars else "")
@@ -79,7 +139,8 @@ def ask_question(
     """Retrieve top-k, build prompt, and get an LLM answer. Returns (answer, sources)."""
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
-    docs = vs.similarity_search(question, k=k)
+    fetch_k = max(20, k * 8)
+    docs = _hybrid_retrieve(vs, question, k=k, fetch_k=fetch_k)
     if not docs:
         return ("I couldn't find anything relevant in your notes.", [])
 
@@ -179,21 +240,25 @@ def stream_answer_with_history(
     Retrieval query is lightly augmented with last few user/assistant turns.
     The generated answer is still constrained to the provided note snippets.
     """
-    # Build a compact history prefix (last 10 messages max)
-    hist = history[-10:] if history else []
+    # Build a compact history prefix for disambiguation only (not as a source)
+    # - keep last up to 6 turns
+    # - truncate each to 200 chars
+    hist = history[-6:] if history else []
     history_lines = []
     for m in hist:
-        role = m.get("role", "user")
+        role = (m.get("role", "user")).capitalize()
         content = (m.get("content") or "").strip()
         if not content:
             continue
-        history_lines.append(f"{role.capitalize()}: {content}")
+        if len(content) > 200:
+            content = content[:200] + "…"
+        history_lines.append(f"{role}: {content}")
     history_text = "\n".join(history_lines)
 
-    # Slightly augment the retrieval query with history for context
-    aug_query = question if not history_text else f"{history_text}\n\nCurrent question: {question}"
+    # Retrieval MUST use only the current question to avoid history leakage
+    aug_query = question
 
-    # Reuse retrieval/prompt prep
+    # Retrieval and prompt prep
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
     docs = vs.similarity_search(aug_query, k=k)
@@ -219,9 +284,9 @@ def stream_answer_with_history(
         blocks.append(f"[{i}] Title: {src['title']}\nFolder: {src['folder']}\nChunk: {src['chunk']}\n---\n{src['text']}")
 
     user_prompt = (
-        (f"Chat History (most recent first):\n{history_text}\n\n" if history_text else "") +
+        (f"Conversation context (for intent only; not a source to cite):\n{history_text}\n\n" if history_text else "") +
         f"Question: {question}\n\nContext:\n" + "\n\n".join(blocks) +
-        "\n\nAnswer concisely and cite sources like [1], [2] where appropriate."
+        "\n\nAnswer concisely and cite sources like [1], [2] where appropriate. Do not cite the conversation context."
     )
 
     system = SYSTEM_PROMPT
@@ -229,6 +294,7 @@ def stream_answer_with_history(
     llm = get_llm(provider=provider, model=llm_model)
     yield ("sources", json.dumps(sources))
     full_text_parts: List[str] = []
+    emitted_citations: set[int] = set()
     for chunk in llm.stream([
         {"role": "system", "content": system},
         {"role": "user", "content": user_prompt},
@@ -237,6 +303,12 @@ def stream_answer_with_history(
         if part:
             full_text_parts.append(part)
             yield ("delta", part)
+            partial = "".join(full_text_parts)
+            cited_now = set(int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", partial))
+            if cited_now - emitted_citations:
+                emitted_citations = cited_now
+                cited_sources = [s for s in sources if s.get("rank") in cited_now]
+                yield ("citations", json.dumps(cited_sources))
     full_text = "".join(full_text_parts)
     cited = set(int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", full_text))
     if cited:
