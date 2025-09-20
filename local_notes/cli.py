@@ -13,6 +13,7 @@ from langchain_community.vectorstores import FAISS
 from .utils.html import html_to_text
 from .utils.dates import parse_to_unix_ts
 from .models import Document
+from .llm.providers import get_llm
 
 app = typer.Typer(help="Local Notes: private semantic search for Apple Notes")
 console = Console()
@@ -122,6 +123,8 @@ def query(
     store_dir: str = typer.Option("./data/index", help="Directory where the vector index is stored"),
     model_name: str = typer.Option("sentence-transformers/all-MiniLM-L6-v2", help="SentenceTransformers model"),
     k: int = typer.Option(5, help="Top K results"),
+    show_text: bool = typer.Option(True, help="Display text snippets for each result"),
+    max_chars: int = typer.Option(300, help="Maximum characters to show per result snippet"),
 ):
     """Query the semantic index."""
     index_files = ["index.faiss", "index.pkl"]
@@ -139,13 +142,88 @@ def query(
     table.add_column("Folder")
     table.add_column("Chunk")
     table.add_column("Score")
+    if show_text:
+        table.add_column("Text")
 
     for rank, (doc, score) in enumerate(docs_and_scores, start=1):
         m = doc.metadata or {}
-        table.add_row(str(rank), m.get("title", ""), str(m.get("folder", "")), str(m.get("chunk", "")), f"{score:.4f}")
+        if show_text:
+            content = doc.page_content or ""
+            snippet = content[:max_chars]
+            if len(content) > max_chars:
+                snippet += "…"
+            table.add_row(
+                str(rank), m.get("title", ""), str(m.get("folder", "")), str(m.get("chunk", "")), f"{score:.4f}", snippet
+            )
+        else:
+            table.add_row(str(rank), m.get("title", ""), str(m.get("folder", "")), str(m.get("chunk", "")), f"{score:.4f}")
 
     console.print(table)
 
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="Your question to ask over your notes"),
+    store_dir: str = typer.Option("./data/index", help="Directory where the vector index is stored"),
+    embed_model: str = typer.Option("sentence-transformers/all-MiniLM-L6-v2", help="Embedding model used to build the index"),
+    k: int = typer.Option(5, help="Top K chunks to retrieve"),
+    provider: str = typer.Option("ollama", help="LLM provider: ollama or openai"),
+    llm_model: str = typer.Option("", help="LLM model name (defaults: ollama=llama3.1, openai=gpt-4o-mini)"),
+):
+    """Ask a question using RAG over your indexed Apple Notes.
+
+    Retrieval uses the FAISS index; generation uses a local (Ollama) model by default, and can be swapped to OpenAI.
+    """
+    index_files = ["index.faiss", "index.pkl"]
+    if not all(os.path.exists(os.path.join(store_dir, f)) for f in index_files):
+        raise typer.BadParameter(f"No FAISS index found in {store_dir}. Run 'index' first.")
+
+    # Retrieve
+    embeddings = HuggingFaceEmbeddings(model_name=embed_model)
+    vs = FAISS.load_local(store_dir, embeddings, allow_dangerous_deserialization=True)
+    docs = vs.similarity_search(question, k=k)
+
+    if not docs:
+        console.print("No results found in the index.", style="yellow")
+        raise typer.Exit(code=0)
+
+    # Build context
+    context_blocks = []
+    sources = []
+    for i, d in enumerate(docs, start=1):
+        m = d.metadata or {}
+        title = m.get("title", "Untitled")
+        folder = m.get("folder", "")
+        chunk = m.get("chunk", 0)
+        sources.append({"rank": i, "title": title, "folder": folder, "chunk": chunk})
+        context_blocks.append(f"[{i}] Title: {title}\nFolder: {folder}\nChunk: {chunk}\n---\n{d.page_content}")
+
+    context = "\n\n".join(context_blocks)
+
+    # Prompt
+    system = (
+        "You are a helpful assistant answering questions using ONLY the provided note excerpts. "
+        "Cite sources using bracket numbers like [1], [2] that refer to the provided snippets. "
+        "If the answer is not contained in the snippets, say you don't know."
+    )
+    user_prompt = f"Question: {question}\n\nContext:\n{context}\n\nAnswer concisely and cite sources like [1], [2] where appropriate."
+
+    # LLM
+    llm = get_llm(provider=provider, model=llm_model or None)
+    resp = llm.invoke([{"role": "system", "content": system}, {"role": "user", "content": user_prompt}])
+    answer_text = getattr(resp, "content", str(resp))
+
+    console.rule("Answer")
+    console.print(answer_text)
+    console.rule("Sources")
+    src_table = Table(show_header=True, header_style="bold")
+    src_table.add_column("#", justify="right")
+    src_table.add_column("Title")
+    src_table.add_column("Folder")
+    src_table.add_column("Chunk")
+    for s in sources:
+        src_table.add_row(str(s["rank"]), s["title"], str(s["folder"]), str(s["chunk"]))
+    console.print(src_table)
 
 if __name__ == "__main__":
     app()
