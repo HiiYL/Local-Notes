@@ -5,7 +5,8 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .service import search_index, ask_question
 from .service import stream_answer
@@ -17,6 +18,16 @@ DEFAULT_STORE = os.environ.get("LOCAL_NOTES_STORE", "./data/index")
 DEFAULT_EMBED_MODEL = os.environ.get(
     "LOCAL_NOTES_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
 )
+
+
+WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+@app.get("/")
+def root():
+    index_path = os.path.join(WEB_DIR, "index.html")
+    return FileResponse(index_path)
 
 
 class SearchResult(BaseModel):
