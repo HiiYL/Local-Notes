@@ -1,7 +1,8 @@
-# Local Notes: Privacy-Focused RAG for Apple Notes
+# Local Notes: Privacy-Focused RAG + LLM Chat for Apple Notes
 
 ![Chat UI 1](images/app_screenshot.png)
 
+Chat with your notes locally using FAISS + Whoosh (RRF) and a local (Ollama) or cloud LLM. 
 Local Notes is a private, local-first semantic search and Retrieval-Augmented Generation (RAG) tool for your Apple Notes. Notes are retrieved using AppleScript (no cloud). Text is embedded locally with SentenceTransformers and indexed with FAISS via LangChain for fast semantic queries. We use LangChain's SemanticChunker to split text into meaningful chunks.
 
 ## Table of Contents
@@ -27,7 +28,6 @@ No data leaves your machine.
 - **FAISS semantic search** (LangChain)
 - **Semantic chunking** with LangChain `SemanticChunker`
 - **Hybrid retrieval**: FAISS (vector) + Whoosh BM25F (lexical with field boosts) via Reciprocal Rank Fusion
-- **MMR diversity** applied earlier and hybrid fusion for improved coverage
 - **Streaming RAG** answers with live citations ([n]) and Markdown rendering
 - **Web UI** (ChatGPT-like) with conversation history, source chips, inline snippet expand + copy
 - **Web UI reindexing progress (SSE)** with a Reindex overlay (scan/plan/fetch/embed/save phases)
