@@ -10,43 +10,35 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>Local Notes</h1>
-      <div class="mode-toggle">
-        <button id="mode-search" class="active">Search</button>
-        <button id="mode-ask">Ask</button>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>Local Notes</h1>
+        <button id="newConv" title="New conversation">＋</button>
       </div>
-    </header>
-
-    <section class="controls">
-      <input id="input" type="text" placeholder="Search or ask…" />
-      <div class="opts">
-        <label>Top K <input id="k" type="number" min="1" max="20" value="6" /></label>
-        <label>Max Chars <input id="maxChars" type="number" min="50" max="2000" value="300" /></label>
-        <label>Provider
-          <select id="provider">
-            <option value="ollama" selected>ollama</option>
-            <option value="openai">openai</option>
-          </select>
-        </label>
-        <label>Model <input id="llmModel" type="text" placeholder="(default)" /></label>
+      <div id="conversations" class="conv-list"></div>
+    </aside>
+    <section class="chat">
+      <div class="chat-header">
+        <div class="controls-inline">
+          <label>Top K <input id="k" type="number" min="1" max="20" value="6" /></label>
+          <label>Provider
+            <select id="provider">
+              <option value="ollama" selected>ollama</option>
+              <option value="openai">openai</option>
+            </select>
+          </label>
+          <label>Model <input id="llmModel" type="text" placeholder="(default)" /></label>
+          <span id="status"></span>
+        </div>
       </div>
-      <div class="actions">
-        <button id="run">Run</button>
-        <span id="status"></span>
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Ask about your notes…"></textarea>
+        <button id="send">Send</button>
+        <button id="stop" class="secondary hidden" title="Stop streaming">Stop</button>
       </div>
     </section>
-
-    <main class="grid">
-      <div id="results" class="panel"></div>
-      <div id="answer" class="panel hidden">
-        <h2>Sources</h2>
-        <div id="sources" class="cards"></div>
-        <h2>Answer</h2>
-        <div id="answerText" class="markdown"></div>
-      </div>
-    </main>
   </div>
 
   <script src="/static/script.js"></script>

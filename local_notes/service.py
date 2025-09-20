@@ -3,11 +3,27 @@ from __future__ import annotations
 import os
 import json
 from typing import List, Tuple, Dict, Any, Optional, Iterable
+import re
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 from .llm.providers import get_llm
+
+
+# A concise, instruction-tuned system prompt optimized for Gemma 2 in a local RAG setting
+SYSTEM_PROMPT = (
+    "You are a helpful assistant answering questions using ONLY the provided note excerpts.\n"
+    "Follow these rules strictly:\n"
+    "- Cite sources using bracket numbers like [1], [2] that refer to the provided snippets.\n"
+    "- Do not invent sources or facts not present in the snippets. If the answer is not in the snippets, say you don't know.\n"
+    "- Prefer concise answers. Use short paragraphs or bullet points.\n"
+    "- If the user asks for steps or a plan, return a clear, numbered list.\n"
+    "- Preserve code blocks and formatting when relevant.\n"
+    "- When quoting directly, keep the quote minimal and include a citation, e.g., \"...\" [3].\n"
+    "- If multiple snippets conflict, note the disagreement and cite each.\n"
+    "- Final section: add a one-line summary and then a 'Sources' line listing the cited numbers in order (e.g., Sources: [2], [5])."
+)
 
 
 def ensure_index_exists(store_dir: str) -> None:
@@ -82,11 +98,7 @@ def ask_question(
         sources.append(src)
         blocks.append(f"[{i}] Title: {src['title']}\nFolder: {src['folder']}\nChunk: {src['chunk']}\n---\n{src['text']}")
 
-    system = (
-        "You are a helpful assistant answering questions using ONLY the provided note excerpts. "
-        "Cite sources using bracket numbers like [1], [2] that refer to the provided snippets. "
-        "If the answer is not contained in the snippets, say you don't know."
-    )
+    system = SYSTEM_PROMPT
     user_prompt = (
         f"Question: {question}\n\nContext:\n" + "\n\n".join(blocks) +
         "\n\nAnswer concisely and cite sources like [1], [2] where appropriate."
@@ -151,23 +163,83 @@ def stream_answer(
         yield ("sources", json.dumps([]))
         yield ("delta", "I couldn't find anything relevant in your notes.")
         yield ("done", "")
+
+
+def stream_answer_with_history(
+    question: str,
+    history: List[Dict[str, str]],  # [{"role": "user"|"assistant", "content": str}]
+    store_dir: str,
+    embed_model: str,
+    k: int = 6,
+    provider: str = "ollama",
+    llm_model: Optional[str] = None,
+) -> Iterable[Tuple[str, str]]:
+    """Stream answer but include recent chat history for better coherence.
+
+    Retrieval query is lightly augmented with last few user/assistant turns.
+    The generated answer is still constrained to the provided note snippets.
+    """
+    # Build a compact history prefix (last 10 messages max)
+    hist = history[-10:] if history else []
+    history_lines = []
+    for m in hist:
+        role = m.get("role", "user")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        history_lines.append(f"{role.capitalize()}: {content}")
+    history_text = "\n".join(history_lines)
+
+    # Slightly augment the retrieval query with history for context
+    aug_query = question if not history_text else f"{history_text}\n\nCurrent question: {question}"
+
+    # Reuse retrieval/prompt prep
+    ensure_index_exists(store_dir)
+    vs = load_vectorstore(store_dir, embed_model)
+    docs = vs.similarity_search(aug_query, k=k)
+    if not docs:
+        yield ("sources", json.dumps([]))
+        yield ("delta", "I couldn't find anything relevant in your notes.")
+        yield ("done", "")
         return
 
-    system = (
-        "You are a helpful assistant answering questions using ONLY the provided note excerpts. "
-        "Cite sources using bracket numbers like [1], [2] that refer to the provided snippets. "
-        "If the answer is not contained in the snippets, say you don't know."
+    blocks: List[str] = []
+    sources: List[Dict[str, Any]] = []
+    for i, d in enumerate(docs, start=1):
+        m = d.metadata or {}
+        src = {
+            "rank": i,
+            "title": m.get("title", "Untitled"),
+            "folder": str(m.get("folder", "")),
+            "chunk": int(m.get("chunk", 0)),
+            "score": 0.0,
+            "text": d.page_content or "",
+        }
+        sources.append(src)
+        blocks.append(f"[{i}] Title: {src['title']}\nFolder: {src['folder']}\nChunk: {src['chunk']}\n---\n{src['text']}")
+
+    user_prompt = (
+        (f"Chat History (most recent first):\n{history_text}\n\n" if history_text else "") +
+        f"Question: {question}\n\nContext:\n" + "\n\n".join(blocks) +
+        "\n\nAnswer concisely and cite sources like [1], [2] where appropriate."
     )
 
+    system = SYSTEM_PROMPT
+
     llm = get_llm(provider=provider, model=llm_model)
-    # Emit sources first
     yield ("sources", json.dumps(sources))
-    # Stream deltas
+    full_text_parts: List[str] = []
     for chunk in llm.stream([
         {"role": "system", "content": system},
         {"role": "user", "content": user_prompt},
     ]):
         part = getattr(chunk, "content", str(chunk))
         if part:
+            full_text_parts.append(part)
             yield ("delta", part)
+    full_text = "".join(full_text_parts)
+    cited = set(int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", full_text))
+    if cited:
+        cited_sources = [s for s in sources if s.get("rank") in cited]
+        yield ("citations", json.dumps(cited_sources))
     yield ("done", "")
