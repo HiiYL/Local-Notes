@@ -8,12 +8,11 @@ from rich.table import Table
 
 from .datasources.apple_notes import AppleNotesDataSource, AppleNotesIncremental
 from .indexing.pipeline import build_index
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 from .utils.html import html_to_text
 from .utils.dates import parse_to_unix_ts
 from .models import Document
 from .llm.providers import get_llm
+from .service import search_index, ask_question
 
 app = typer.Typer(help="Local Notes: private semantic search for Apple Notes")
 console = Console()
@@ -131,10 +130,7 @@ def query(
     if not all(os.path.exists(os.path.join(store_dir, f)) for f in index_files):
         raise typer.BadParameter(f"No FAISS index found in {store_dir}. Run 'index' first.")
 
-    embeddings = HuggingFaceEmbeddings(model_name=model_name)
-    vs = FAISS.load_local(store_dir, embeddings, allow_dangerous_deserialization=True)
-
-    docs_and_scores = vs.similarity_search_with_score(text, k=k)
+    results = search_index(text, store_dir=store_dir, embed_model=model_name, k=k, max_chars=max_chars)
 
     table = Table(title="Search Results")
     table.add_column("Rank", justify="right")
@@ -145,18 +141,11 @@ def query(
     if show_text:
         table.add_column("Text")
 
-    for rank, (doc, score) in enumerate(docs_and_scores, start=1):
-        m = doc.metadata or {}
+    for r in results:
         if show_text:
-            content = doc.page_content or ""
-            snippet = content[:max_chars]
-            if len(content) > max_chars:
-                snippet += "…"
-            table.add_row(
-                str(rank), m.get("title", ""), str(m.get("folder", "")), str(m.get("chunk", "")), f"{score:.4f}", snippet
-            )
+            table.add_row(str(r["rank"]), r["title"], str(r["folder"]), str(r["chunk"]), f"{r['score']:.4f}", r["text"])
         else:
-            table.add_row(str(rank), m.get("title", ""), str(m.get("folder", "")), str(m.get("chunk", "")), f"{score:.4f}")
+            table.add_row(str(r["rank"]), r["title"], str(r["folder"]), str(r["chunk"]), f"{r['score']:.4f}")
 
     console.print(table)
 
@@ -168,7 +157,8 @@ def ask(
     embed_model: str = typer.Option("sentence-transformers/all-MiniLM-L6-v2", help="Embedding model used to build the index"),
     k: int = typer.Option(5, help="Top K chunks to retrieve"),
     provider: str = typer.Option("ollama", help="LLM provider: ollama or openai"),
-    llm_model: str = typer.Option("", help="LLM model name (defaults: ollama=llama3.1, openai=gpt-4o-mini)"),
+    llm_model: str = typer.Option("", help="LLM model name (defaults: ollama=gemma2, openai=gpt-4o-mini)"),
+    stream: bool = typer.Option(True, help="Stream tokens as they are generated"),
 ):
     """Ask a question using RAG over your indexed Apple Notes.
 
@@ -178,52 +168,57 @@ def ask(
     if not all(os.path.exists(os.path.join(store_dir, f)) for f in index_files):
         raise typer.BadParameter(f"No FAISS index found in {store_dir}. Run 'index' first.")
 
-    # Retrieve
-    embeddings = HuggingFaceEmbeddings(model_name=embed_model)
-    vs = FAISS.load_local(store_dir, embeddings, allow_dangerous_deserialization=True)
-    docs = vs.similarity_search(question, k=k)
+    if stream:
+        from .service import stream_answer
+        console.rule("Answer")
+        full = []
+        srcs = None
+        for ev, data in stream_answer(
+            question=question,
+            store_dir=store_dir,
+            embed_model=embed_model,
+            k=k,
+            provider=provider,
+            llm_model=(llm_model or None),
+        ):
+            if ev == "sources":
+                srcs = json.loads(data)
+                # Print sources first
+                console.rule("Sources")
+                src_table = Table(show_header=True, header_style="bold")
+                src_table.add_column("#", justify="right")
+                src_table.add_column("Title")
+                src_table.add_column("Folder")
+                src_table.add_column("Chunk")
+                for s in srcs:
+                    src_table.add_row(str(s["rank"]), s["title"], str(s["folder"]), str(s["chunk"]))
+                console.print(src_table)
+                console.rule("Answer (stream)")
+            elif ev == "delta":
+                print(data, end="", flush=True)
+                full.append(data)
+        print()
+    else:
+        answer_text, sources = ask_question(
+            question=question,
+            store_dir=store_dir,
+            embed_model=embed_model,
+            k=k,
+            provider=provider,
+            llm_model=(llm_model or None),
+        )
 
-    if not docs:
-        console.print("No results found in the index.", style="yellow")
-        raise typer.Exit(code=0)
-
-    # Build context
-    context_blocks = []
-    sources = []
-    for i, d in enumerate(docs, start=1):
-        m = d.metadata or {}
-        title = m.get("title", "Untitled")
-        folder = m.get("folder", "")
-        chunk = m.get("chunk", 0)
-        sources.append({"rank": i, "title": title, "folder": folder, "chunk": chunk})
-        context_blocks.append(f"[{i}] Title: {title}\nFolder: {folder}\nChunk: {chunk}\n---\n{d.page_content}")
-
-    context = "\n\n".join(context_blocks)
-
-    # Prompt
-    system = (
-        "You are a helpful assistant answering questions using ONLY the provided note excerpts. "
-        "Cite sources using bracket numbers like [1], [2] that refer to the provided snippets. "
-        "If the answer is not contained in the snippets, say you don't know."
-    )
-    user_prompt = f"Question: {question}\n\nContext:\n{context}\n\nAnswer concisely and cite sources like [1], [2] where appropriate."
-
-    # LLM
-    llm = get_llm(provider=provider, model=llm_model or None)
-    resp = llm.invoke([{"role": "system", "content": system}, {"role": "user", "content": user_prompt}])
-    answer_text = getattr(resp, "content", str(resp))
-
-    console.rule("Answer")
-    console.print(answer_text)
-    console.rule("Sources")
-    src_table = Table(show_header=True, header_style="bold")
-    src_table.add_column("#", justify="right")
-    src_table.add_column("Title")
-    src_table.add_column("Folder")
-    src_table.add_column("Chunk")
-    for s in sources:
-        src_table.add_row(str(s["rank"]), s["title"], str(s["folder"]), str(s["chunk"]))
-    console.print(src_table)
+        console.rule("Answer")
+        console.print(answer_text)
+        console.rule("Sources")
+        src_table = Table(show_header=True, header_style="bold")
+        src_table.add_column("#", justify="right")
+        src_table.add_column("Title")
+        src_table.add_column("Folder")
+        src_table.add_column("Chunk")
+        for s in sources:
+            src_table.add_row(str(s["rank"]), s["title"], str(s["folder"]), str(s["chunk"]))
+        console.print(src_table)
 
 if __name__ == "__main__":
     app()
