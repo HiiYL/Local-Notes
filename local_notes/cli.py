@@ -13,6 +13,8 @@ from .utils.dates import parse_to_unix_ts
 from .models import Document
 from .llm.providers import get_llm
 from .service import search_index, ask_question
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
 app = typer.Typer(help="Local Notes: private semantic search for Apple Notes")
 console = Console()

@@ -211,7 +211,8 @@
       (arr||[]).forEach(s => {
         const chip = document.createElement('span');
         chip.className = 'source-chip';
-        chip.textContent = `[${s.rank}] ${s.title}`;
+        const chipLabel = `[${s.rank}] ${s.title || ''}` + (s.heading ? ` — ${s.heading}` : '');
+        chip.textContent = chipLabel.trim();
         if (s.text) {
           const snippet = String(s.text);
           chip.title = snippet.length > 500 ? (snippet.slice(0, 500) + '…') : snippet;

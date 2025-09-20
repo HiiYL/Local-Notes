@@ -6,6 +6,7 @@ from langchain_experimental.text_splitter import SemanticChunker
 from langchain_core.documents import Document as LCDocument
 
 from ..models import Document
+from .cache import CachedEmbeddings
 import os
 import hashlib
 
@@ -22,7 +23,9 @@ def build_index(
     - Uses `SemanticChunker` to split text semantically.
     - Embeds with `HuggingFaceEmbeddings` and persists FAISS to `store_dir`.
     """
-    embeddings = HuggingFaceEmbeddings(model_name=model_name)
+    # Wrap embeddings with a SQLite-backed cache to avoid recomputation
+    base_embeddings = HuggingFaceEmbeddings(model_name=model_name)
+    embeddings = CachedEmbeddings(base_embeddings, cache_path=os.path.join(store_dir, "emb_cache.sqlite"))
     splitter = SemanticChunker(embeddings)
 
     index_files = ["index.faiss", "index.pkl"]
@@ -72,6 +75,7 @@ def build_index(
                 "title": d.title,
                 "source": d.source,
                 "chunk": i,
+                "chunk_id": i,
                 "doc_hash": doc_hash,
                 **d.metadata,
             }
