@@ -16,6 +16,21 @@
         <h1>Local Notes</h1>
         <button id="newConv" title="New conversation">＋</button>
       </div>
+
+  <!-- Indexing progress overlay -->
+  <div id="indexOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h3>Rebuilding Index</h3>
+      <div class="ov-row"><span>Scan</span><progress id="ovScan" value="0" max="0"></progress><span id="ovScanTxt"></span></div>
+      <div class="ov-row"><span>Plan</span><progress id="ovPlan" value="0" max="1"></progress><span id="ovPlanTxt"></span></div>
+      <div class="ov-row"><span>Fetch</span><progress id="ovFetch" value="0" max="1"></progress><span id="ovFetchTxt"></span></div>
+      <div class="ov-row"><span>Embed</span><progress id="ovEmbed" value="0"></progress><span id="ovEmbedTxt"></span></div>
+      <div class="ov-actions">
+        <button id="ovCancel" class="secondary">Cancel</button>
+        <button id="ovClose" class="secondary hidden">Close</button>
+      </div>
+    </div>
+  </div>
       <div id="conversations" class="conv-list"></div>
     </aside>
     <section class="chat">
@@ -29,9 +44,16 @@
             </select>
           </label>
           <label>Model <input id="llmModel" type="text" placeholder="(default)" /></label>
+          <label>Prefer Recent
+            <input id="recency" type="range" min="0" max="100" value="10" />
+            <span id="recencyVal">10%</span>
+          </label>
           <span id="status"></span>
         </div>
-        <button id="settingsToggle" class="secondary" title="Toggle settings">⚙️</button>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+          <button id="reindexBtn" class="secondary" title="Rebuild index">Reindex</button>
+          <button id="settingsToggle" class="secondary" title="Toggle settings">⚙️</button>
+        </div>
       </div>
       <div id="messages" class="messages"></div>
       <div class="composer">

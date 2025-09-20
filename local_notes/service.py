@@ -9,6 +9,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 from .llm.providers import get_llm
+from .indexing import whoosh_index
 
 
 # A concise, instruction-tuned system prompt optimized for Gemma 2 in a local RAG setting
@@ -17,7 +18,7 @@ SYSTEM_PROMPT = (
     "Follow these rules strictly:\n"
     "- Cite sources using bracket numbers like [1], [2] that refer to the provided snippets.\n"
     "- Do not invent sources or facts not present in the snippets. If the answer is not in the snippets, say you don't know.\n"
-    "- Prefer concise answers. Use short paragraphs or bullet points.\n"
+    "- Prefer detailed, well-structured answers. Use short paragraphs AND bullet points when appropriate.\n"
     "- If the user asks for steps or a plan, return a clear, numbered list.\n"
     "- Preserve code blocks and formatting when relevant.\n"
     "- When quoting directly, keep the quote minimal and include a citation, e.g., \"...\" [3].\n"
@@ -81,15 +82,41 @@ def _rrf_merge(vector_ranked: list, lexical_ranked: list, key_fn) -> list:
     return merged
 
 
-def _hybrid_retrieve(vs: FAISS, query: str, k: int, fetch_k: int) -> list:
-    """Vector + lexical (RRF) hybrid retrieval over a candidate pool from FAISS."""
+def _hybrid_retrieve(vs: FAISS, store_dir: str, query: str, k: int, fetch_k: int, recency_alpha: float = 0.1) -> list:
+    """Hybrid retrieval using FAISS (vector) + Whoosh (lexical) fused via RRF, with small recency bias."""
+    # Vector pool
     pool = vs.similarity_search_with_score(query, k=fetch_k)
-    docs = [d for d, _ in pool]
-    # lexical ranking over the same pool
-    docs_lex = sorted(docs, key=lambda d: _lexical_score(d.page_content or "", query), reverse=True)
-    # fused order
-    key_fn = lambda d: f"{d.metadata.get('folder','')}::{d.metadata.get('title','')}::{d.metadata.get('chunk',0)}"
-    fused = _rrf_merge(docs, docs_lex, key_fn)
+    vec_docs = [d for d, _ in pool]
+
+    # Lexical pool from Whoosh, map to FAISS docstore docs by doc_key (doc_id::chunk_id)
+    wres = whoosh_index.search(store_dir, query, fetch_k) or []
+    lex_docs = []
+    updated_map: Dict[str, int] = {}
+    for r in wres:
+        dk = r.get("doc_key")
+        if dk and dk in getattr(vs.docstore, "_dict", {}):
+            doc = vs.docstore._dict[dk]
+            lex_docs.append(doc)
+            updated_map[dk] = int(r.get("updated_at") or 0)
+    # Fallback: if Whoosh empty, degrade to simple lexical over vector pool
+    if not lex_docs:
+        lex_docs = sorted(vec_docs, key=lambda d: _lexical_score(d.page_content or "", query), reverse=True)
+
+    # Fuse
+    key_fn = lambda d: f"{d.metadata.get('doc_id','')}::{int(d.metadata.get('chunk_id', d.metadata.get('chunk', 0)))}"
+    fused = _rrf_merge(vec_docs, lex_docs, key_fn)
+
+    # Recency bias: promote docs that have higher updated_at in the Whoosh set
+    if updated_map and recency_alpha > 0:
+        times = [updated_map.get(key_fn(d), 0) for d in fused]
+        if any(times):
+            tmax = max(times)
+            tmin = min(t for t in times if t)
+            span = max(1, tmax - tmin)
+            fused = sorted(
+                fused,
+                key=lambda d: -recency_alpha * ((updated_map.get(key_fn(d), 0) - tmin) / span if updated_map.get(key_fn(d), 0) else 0.0),
+            )
     return fused[:k]
 
 
@@ -103,11 +130,12 @@ def search_index(
     """Search the FAISS index and return list of dicts with metadata and snippet."""
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
-    # Hybrid retrieval: vector + lexical with RRF, from a larger pool
+    # Hybrid retrieval: FAISS + Whoosh with RRF
     fetch_k = max(20, k * 8)
     pool = vs.similarity_search_with_score(query, k=fetch_k)
     score_map = {d.page_content: float(s) for d, s in pool}
-    docs_ranked = _hybrid_retrieve(vs, query, k=k, fetch_k=fetch_k)
+    recency_alpha = float(os.environ.get("LOCAL_NOTES_RECENCY_ALPHA", "0.1") or 0.1)
+    docs_ranked = _hybrid_retrieve(vs, store_dir, query, k=k, fetch_k=fetch_k, recency_alpha=recency_alpha)
     out: List[Dict[str, Any]] = []
     for rank, doc in enumerate(docs_ranked, start=1):
         score = score_map.get(doc.page_content, 0.0)
@@ -144,7 +172,8 @@ def ask_question(
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
     fetch_k = max(20, k * 8)
-    docs = _hybrid_retrieve(vs, question, k=k, fetch_k=fetch_k)
+    alpha = recency_alpha if recency_alpha is not None else float(os.environ.get("LOCAL_NOTES_RECENCY_ALPHA", "0.1") or 0.1)
+    docs = _hybrid_retrieve(vs, store_dir, question, k=k, fetch_k=fetch_k, recency_alpha=alpha)
     if not docs:
         return ("I couldn't find anything relevant in your notes.", [])
 
@@ -184,11 +213,14 @@ def _prepare_sources_and_prompt(
     store_dir: str,
     embed_model: str,
     k: int,
+    recency_alpha: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Retrieve docs and build the user prompt. Returns (sources, prompt)."""
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
-    docs = vs.similarity_search(question, k=k)
+    fetch_k = max(20, k * 8)
+    recency_alpha = float(os.environ.get("LOCAL_NOTES_RECENCY_ALPHA", "0.1") or 0.1)
+    docs = _hybrid_retrieve(vs, store_dir, question, k=k, fetch_k=fetch_k, recency_alpha=recency_alpha)
     if not docs:
         return [], ""
     blocks: List[str] = []
@@ -219,6 +251,7 @@ def stream_answer(
     k: int = 6,
     provider: str = "ollama",
     llm_model: Optional[str] = None,
+    recency_alpha: Optional[float] = None,
 ) -> Iterable[Tuple[str, str]]:
     """Yield a stream of (event, data) tuples.
 
@@ -227,7 +260,7 @@ def stream_answer(
     - ("delta", text_chunk)
     - ("done", "")
     """
-    sources, user_prompt = _prepare_sources_and_prompt(question, store_dir, embed_model, k)
+    sources, user_prompt = _prepare_sources_and_prompt(question, store_dir, embed_model, k, recency_alpha=recency_alpha)
     if not sources:
         yield ("sources", json.dumps([]))
         yield ("delta", "I couldn't find anything relevant in your notes.")
@@ -242,6 +275,7 @@ def stream_answer_with_history(
     k: int = 6,
     provider: str = "ollama",
     llm_model: Optional[str] = None,
+    recency_alpha: float = 0.1,
 ) -> Iterable[Tuple[str, str]]:
     """Stream answer but include recent chat history for better coherence.
 
@@ -269,7 +303,8 @@ def stream_answer_with_history(
     # Retrieval and prompt prep
     ensure_index_exists(store_dir)
     vs = load_vectorstore(store_dir, embed_model)
-    docs = vs.similarity_search(aug_query, k=k)
+    fetch_k = max(20, k * 8)
+    docs = _hybrid_retrieve(vs, store_dir, aug_query, k=k, fetch_k=fetch_k, recency_alpha=recency_alpha)
     if not docs:
         yield ("sources", json.dumps([]))
         yield ("delta", "I couldn't find anything relevant in your notes.")

@@ -15,6 +15,8 @@ from .llm.providers import get_llm
 from .service import search_index, ask_question
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingColumn, SpinnerColumn, TextColumn
+
 
 app = typer.Typer(help="Local Notes: private semantic search for Apple Notes")
 console = Console()
@@ -114,7 +116,51 @@ def index(
         )
 
     console.print(f"Upserting {len(docs)} notes into index...", style="bold cyan")
-    build_index(docs, store_dir=store_dir, model_name=model_name, incremental=incremental)
+
+    # Rich progress reporter
+    class RichReporter:
+        def __init__(self, progress: Progress):
+            self.p = progress
+            self.scan_task = None
+            self.embed_task = None
+            self._chunks_total = 0
+            self._chunks_done = 0
+            self._notes_done = 0
+
+        def begin(self, total: int):
+            self.scan_task = self.p.add_task("[cyan]Notes", total=total)
+            self.embed_task = self.p.add_task("[magenta]Chunks", total=None)
+
+        def note_start(self, doc_id: str, title: str):
+            # advance notes by one when starting work on it
+            if self.scan_task is not None:
+                self.p.advance(self.scan_task, 1)
+
+        def chunk(self):
+            # we don't know total chunks in advance; update as we go
+            if self.embed_task is not None:
+                self.p.update(self.embed_task, total=None)
+                self.p.advance(self.embed_task, 1)
+
+        def note_done(self, doc_id: str, chunks: int):
+            self._notes_done += 1
+
+        def done(self):
+            pass
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        reporter = RichReporter(progress)
+        build_index(docs, store_dir=store_dir, model_name=model_name, incremental=incremental, reporter=reporter)
+
     console.print("Index build complete.", style="bold green")
 
 

@@ -7,6 +7,7 @@ from langchain_core.documents import Document as LCDocument
 
 from ..models import Document
 from .cache import CachedEmbeddings
+from . import whoosh_index
 import os
 import hashlib
 
@@ -16,6 +17,7 @@ def build_index(
     store_dir: str,
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     incremental: bool = True,
+    reporter: object | None = None,
 ):
     """Build a FAISS index using LangChain with semantic chunking.
 
@@ -53,6 +55,13 @@ def build_index(
     upsert_docs: list[LCDocument] = []
     upsert_ids: list[str] = []
 
+    # Progress: announce start
+    if reporter and hasattr(reporter, "begin"):
+        try:
+            reporter.begin(total=len(documents))
+        except Exception:
+            pass
+
     for d in documents:
         if not d.text:
             continue
@@ -67,6 +76,15 @@ def build_index(
             ids_to_delete = existing_ids_by_doc.get(d.id, [])
             if ids_to_delete:
                 vs.delete(ids=ids_to_delete)
+                # keep Whoosh in sync
+                whoosh_index.delete_docs(store_dir, ids_to_delete)
+
+        # Progress: per-note start
+        if reporter and hasattr(reporter, "note_start"):
+            try:
+                reporter.note_start(doc_id=d.id, title=d.title)
+            except Exception:
+                pass
 
         chunks = splitter.split_text(d.text)
         for i, ch in enumerate(chunks):
@@ -80,7 +98,33 @@ def build_index(
                 **d.metadata,
             }
             upsert_docs.append(LCDocument(page_content=ch, metadata=meta))
-            upsert_ids.append(f"{d.id}::{i}")
+            doc_key = f"{d.id}::{i}"
+            upsert_ids.append(doc_key)
+            # stage whoosh row
+            whoosh_index.add_docs(
+                store_dir,
+                [
+                    {
+                        "doc_key": doc_key,
+                        "title": d.title,
+                        "folder": d.metadata.get("folder", ""),
+                        "heading": d.metadata.get("heading", ""),
+                        "updated_at": int(d.metadata.get("updated_at", 0) or 0),
+                        "content": ch,
+                    }
+                ],
+            )
+            if reporter and hasattr(reporter, "chunk"):
+                try:
+                    reporter.chunk()
+                except Exception:
+                    pass
+
+        if reporter and hasattr(reporter, "note_done"):
+            try:
+                reporter.note_done(doc_id=d.id, chunks=len(chunks))
+            except Exception:
+                pass
 
     if not upsert_docs:
         # Nothing to add/modify
@@ -88,6 +132,11 @@ def build_index(
             vs.save_local(store_dir)
         else:
             os.makedirs(store_dir, exist_ok=True)
+        if reporter and hasattr(reporter, "done"):
+            try:
+                reporter.done()
+            except Exception:
+                pass
         return vs
 
     if vs is None:
@@ -97,4 +146,9 @@ def build_index(
         vs.add_documents(upsert_docs, ids=upsert_ids)
 
     vs.save_local(store_dir)
+    if reporter and hasattr(reporter, "done"):
+        try:
+            reporter.done()
+        except Exception:
+            pass
     return vs

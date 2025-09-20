@@ -1,3 +1,5 @@
+# Recency bias default (0.0–1.0). UI slider overrides per request when using Web UI.
+export LOCAL_NOTES_RECENCY_ALPHA=0.1
 # Local Notes: Privacy-Focused RAG for Apple Notes
 
 Local Notes is a private, local-first semantic search and Retrieval-Augmented Generation (RAG) tool for your Apple Notes. Notes are retrieved using AppleScript (no cloud). Text is embedded locally with SentenceTransformers and indexed with FAISS via LangChain for fast semantic queries. We use LangChain's SemanticChunker to split text into meaningful chunks.
@@ -17,6 +19,7 @@ No data leaves your machine.
 - **Stable IDs** in metadata and citations: `doc_id`, `chunk_id` so citations survive re-indexing or title changes
 - **Embedding cache** (SQLite) avoids re-embedding unchanged text
 - **Incremental indexing** with change detection and optional `--since` filter
+- **Indexing progress in CLI** with Rich progress bars (notes, chunks)
 - **Simple CLI**: `index`, `query`, and `ask` (streaming by default)
 - **Privacy-first**: default local LLM via Ollama; can switch to OpenAI
 - **Extensible datasources**
@@ -165,7 +168,9 @@ uvicorn local_notes.server:app --reload --port 8000
 Web UI highlights:
 - **Streaming** assistant messages with **live citations**; chips show snippet on hover.
 - **Click chips** to expand full snippet inline; **Copy** snippet.
+- **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
 - **Settings** gear toggles controls (Provider, Model, Top K).
+- **Prefer Recent** slider biases retrieval toward newer chunks.
 - **Conversations** auto-saved; citations persisted with stable IDs.
 
 ## Local LLM with Ollama
@@ -271,7 +276,28 @@ python -m local_notes.cli ask "..." --provider openai --llm-model gpt-4o-mini
   - We md5-hash full note content (`doc_hash`) and only re-embed changed notes; unchanged chunks are retained. `--since` limits to recently modified notes.
 
 - **Hybrid Retrieval**
-  - Vector similarities fused with a lexical ranker (RapidFuzz/Jaccard) using Reciprocal Rank Fusion, improving exact-term recall while keeping semantic relevance.
+  - Vector similarities fused with a lexical ranker using Reciprocal Rank Fusion.
+  - **Whoosh BM25F** with field boosts: `title` (x3), `heading` (x2), `content` (x1), `folder` (x0.5). The Whoosh index is stored at `./data/index/whoosh/`.
+  - A small recency bonus is applied when `updated_at` is available.
+
+## CLI Indexing Progress
+
+The `index` command shows progress bars for notes and chunks:
+
+```bash
+python -m local_notes.cli index apple-notes --store-dir ./data/index
+
+Listing Apple Notes metadata...
+Notes needing body fetch: 609
+Upserting 609 notes into index...
+⠇ Notes  ━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━ 209/609  0:01:20 0:02:24
+⠇ Chunks ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 275/None 0:01:20        
+```
+
+Progress includes:
+- Notes processed
+- Chunks embedded (benefits from the embedding cache)
+- Elapsed/remaining time (estimates)
 
 ## Security & Privacy
 - All processing is local.
