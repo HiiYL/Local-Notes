@@ -155,26 +155,58 @@ class QwenAgentAskRequest(BaseModel):
     provider: str = "ollama_openai"
     llm_model: Optional[str] = None
     max_tool_iters: int = 3
+    conv_id: str
 
 
 @app.post("/qwen-agent/ask/stream")
 def qwen_agent_ask_stream(req: QwenAgentAskRequest):
+    import time
+    conv_id = req.conv_id
+    # Save user message first (avoid duplicate consecutive user messages)
+    ts = int(time.time())
+    try:
+        with conv_db.conn:  # type: ignore[attr-defined]
+            cur = conv_db.conn.execute(
+                "SELECT id, role, content FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT 1",
+                (conv_id,),
+            )
+            last = cur.fetchone()
+            if not last or not (last[1] == "user" and (last[2] or "") == (req.question or "")):
+                conv_db.add_message(conv_id, "user", req.question, ts)
+    except Exception:
+        conv_db.add_message(conv_id, "user", req.question, ts)
+
+    # Auto-title conversation if still default
+    conv = conv_db.get_conversation(conv_id)
+    if conv and (conv.get("title") or "").strip() in ("", "New Conversation"):
+        title = req.question.strip()
+        if len(title) > 60:
+            title = title[:60] + "…"
+        conv_db.update_title(conv_id, title, ts)
+
     def event_gen():
+        collected: List[str] = []
+        citations_json: Optional[str] = None
         for ev, data in stream_qwen_agent(
             question=req.question,
             provider=req.provider,
             llm_model=req.llm_model,
             max_tool_iters=req.max_tool_iters,
         ):
-            # SSE: emit one event header, then one data: line per logical line in payload
+            if ev == "delta":
+                collected.append(data)
+            elif ev == "citations":
+                citations_json = data
             yield f"event: {ev}\n"
-            # ensure 'data:' prefix per line to avoid accidental delimiter collisions
             for line in (str(data).splitlines() or [""]):
                 yield f"data: {line}\n"
             yield "\n"
-        # Ensure done if underlying generator didn't emit it
+        # Persist assistant message BEFORE final done
+        full = "".join(collected)
+        conv_db.add_message(conv_id, "assistant", full, int(time.time()), citations_json=citations_json)
         yield "event: done\n"
         yield "data: \n\n"
+
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 class AgentAskRequest(BaseModel):

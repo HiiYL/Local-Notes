@@ -1,4 +1,4 @@
-# Local Notes: Privacy-Focused RAG + LLM Chat for Apple Notes
+# Local Notes: Privacy-Focused RAG + Agentic LLM Chat for Apple Notes
 
 ![Chat UI 1](images/app_screenshot.png)
 
@@ -9,6 +9,7 @@ Local Notes is a private, local-first semantic search and Retrieval-Augmented Ge
 
 - [Features](#features)
 - [Quick Start](#quick-start)
+- [Agent Mode (Qwen-Agent)](#agent-mode-qwen-agent)
 - [Web UI](#web-ui)
 - [Local LLM with Ollama](#local-llm-with-ollama)
 - [Architecture](#architecture)
@@ -75,6 +76,8 @@ uvicorn local_notes.server:app --reload --port 8000
 
 In the header, use the gear icon for settings and the "Reindex" button to rebuild the index with a live progress overlay.
 
+Agent Mode (Qwen-Agent) is ON by default. You can toggle it at the top right of the chat. When ON, the agent plans tool usage, shows a thinking timeline, and streams a citations-only set of source chips as it references [n] in the answer.
+
 4. (Optional) Ask from the CLI instead of the UI:
 
 ```bash
@@ -104,7 +107,7 @@ At a high level, Local Notes consists of a data ingestion/indexing pipeline, a r
   - Hybrid retrieval (vector + lexical) with Reciprocal Rank Fusion.
   - MMR/Hybrid diversity for better coverage in `search_index()` and RAG.
   - Builds prompts and streams tokens from your chosen provider (Ollama/OpenAI).
-  - Emits SSE events: `sources` (all), `citations` (cited-only), `delta`, `done`.
+  - Emits SSE events in classic mode: `sources` (all), `citations` (cited-only), `delta`, `done`.
 
 - **Server (`local_notes/server.py`)**
   - FastAPI endpoints: `/search`, `/ask/stream`, and conversation CRUD + `/conv/{id}/ask/stream`.
@@ -112,6 +115,7 @@ At a high level, Local Notes consists of a data ingestion/indexing pipeline, a r
 
 - **Web UI (`local_notes/web/`)**
   - Chat-like interface with streaming answers, live citations, snippet chips (expand/copy), settings.
+  - Agent Mode ON by default: shows tool calls, a thinking timeline, and citations-only chips (chips appear only when the answer cites [n]).
   - Persists settings in localStorage.
 
 - **Conversations store (`local_notes/storage/conversations.py`)**
@@ -139,18 +143,24 @@ Implement `local_notes.datasources.base.DataSource` and register in the CLI. See
 Start the API server and open the chat UI:
 
 ```bash
+ollama serve
+ollama pull qwen3:8b
 uvicorn local_notes.server:app --reload --port 8000
 # then open http://127.0.0.1:8000/
 ```
 
 Web UI highlights (Chat view):
-- **Streaming** assistant messages with **live citations**; chips show snippet on hover.
-- **Click chips** to expand full snippet inline; **Copy** snippet.
-- **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
-- **Settings** gear toggles controls (Provider, Model, Top K).
-- **Prefer Recent** slider biases retrieval toward newer chunks.
-- **Reindex** button shows a progress overlay with phases (Scan, Plan, Fetch, Embed, Save). You can Cancel while running.
-- **Conversations** auto-saved; citations persisted with stable IDs.
+  - **Streaming** assistant messages with **live citations**; chips show snippet on hover.
+  - **Click chips** to expand full snippet inline; **Copy** snippet.
+  - **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
+  - **Agent Mode** (default ON):
+    - Tool calls surface as trace lines and chips.
+    - Thinking timeline streams incremental thoughts.
+    - Source chips are shown only when actually cited in the answer.
+  - **Settings** gear toggles controls (Provider, Model, Top K).
+  - **Prefer Recent** slider biases retrieval toward newer chunks.
+  - **Reindex** button shows a progress overlay with phases (Scan, Plan, Fetch, Embed, Save). You can Cancel while running.
+  - **Conversations** auto-saved; citations persisted with stable IDs.
 
 ## Local LLM with Ollama
 

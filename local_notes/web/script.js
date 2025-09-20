@@ -45,8 +45,17 @@
       recencyEl.value = String(saved.recency);
       recencyValEl.textContent = `${saved.recency}%`;
     }
-    if (typeof saved.agentMode === 'boolean' && agentModeEl) {
-      agentModeEl.checked = !!saved.agentMode;
+    if (agentModeEl) {
+      // Default ON if no saved preference
+      if (typeof saved.agentMode === 'boolean') {
+        agentModeEl.checked = !!saved.agentMode;
+      } else {
+        agentModeEl.checked = true;
+        // persist default for future loads
+        const s = JSON.parse(localStorage.getItem('ln_settings') || '{}');
+        s.agentMode = true;
+        localStorage.setItem('ln_settings', JSON.stringify(s));
+      }
     }
 
   function truncateUiAfter(mid) {
@@ -485,6 +494,7 @@
         // Force OpenAI-compatible provider for agent tool-calls via Ollama
         provider: 'ollama_openai',
         llm_model: llmModelEl.value || null,
+        conv_id: currentConv || null,
       };
       streamUrl = `/qwen-agent/ask/stream`;
     } else {
