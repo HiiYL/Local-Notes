@@ -113,8 +113,10 @@
     t = t.replace(/(:)\s*\*/g, '$1\n*');
     // Also support dashes as list markers
     t = t.replace(/(:)\s*-\s+/g, '$1\n- ');
-    // Ensure headings start on new lines: "text## Heading" => "text\n\n## Heading"
-    t = t.replace(/([^\n])(#\s?#+\s)/g, '$1\n\n$2');
+    // Ensure headings start on new lines: "text## Heading" or "text ## Heading" => "text\n\n## Heading"
+    t = t.replace(/([^\n])\s*(#{1,6}\s+)/g, '$1\n\n$2');
+    // Trim extra spaces before heading markers at line starts
+    t = t.replace(/\n\s+(#{1,6}\s+)/g, '\n$1');
     // Add paragraph break between sentence endings and next capitalized sentence when missing space/newline
     t = t.replace(/([.!?])([A-Z])/g, '$1\n\n$2');
     // If list markers appear mid-line without newline, insert it

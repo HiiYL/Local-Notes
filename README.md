@@ -1,8 +1,21 @@
-# Recency bias default (0.0–1.0). UI slider overrides per request when using Web UI.
-export LOCAL_NOTES_RECENCY_ALPHA=0.1
 # Local Notes: Privacy-Focused RAG for Apple Notes
 
 Local Notes is a private, local-first semantic search and Retrieval-Augmented Generation (RAG) tool for your Apple Notes. Notes are retrieved using AppleScript (no cloud). Text is embedded locally with SentenceTransformers and indexed with FAISS via LangChain for fast semantic queries. We use LangChain's SemanticChunker to split text into meaningful chunks.
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Web UI](#web-ui)
+- [Local LLM with Ollama](#local-llm-with-ollama)
+- [Architecture](#architecture)
+- [Indexing Details](#indexing-details)
+- [CLI Indexing Progress](#cli-indexing-progress)
+- [API Endpoints](#api-endpoints)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Security & Privacy](#security--privacy)
+- [License](#license)
 
 No data leaves your machine.
 
@@ -11,10 +24,11 @@ No data leaves your machine.
 - **Local embeddings** with `sentence-transformers` (LangChain `HuggingFaceEmbeddings`)
 - **FAISS semantic search** (LangChain)
 - **Semantic chunking** with LangChain `SemanticChunker`
-- **Hybrid retrieval**: vector + lexical (RapidFuzz/Jaccard) with Reciprocal Rank Fusion
+- **Hybrid retrieval**: FAISS (vector) + Whoosh BM25F (lexical with field boosts) via Reciprocal Rank Fusion
 - **MMR diversity** applied earlier and hybrid fusion for improved coverage
 - **Streaming RAG** answers with live citations ([n]) and Markdown rendering
 - **Web UI** (ChatGPT-like) with conversation history, source chips, inline snippet expand + copy
+- **Web UI reindexing progress (SSE)** with a Reindex overlay (scan/plan/fetch/embed/save phases)
 - **Conversations** persisted in SQLite (`conversations.db`) with citations stored per message
 - **Stable IDs** in metadata and citations: `doc_id`, `chunk_id` so citations survive re-indexing or title changes
 - **Embedding cache** (SQLite) avoids re-embedding unchanged text
@@ -39,6 +53,31 @@ No data leaves your machine.
 uv venv
 source .venv/bin/activate
 uv pip install -e .
+```
+
+2. Index your Apple Notes (first run may take a while):
+
+```bash
+python -m local_notes.cli index apple-notes --store-dir ./data/index
+# Tip: incremental is on by default; to force a full rebuild use --no-incremental
+# Tip: only recent changes
+# python -m local_notes.cli index apple-notes --store-dir ./data/index --since "2025-09-01"
+```
+
+3. Start the Web UI (Chat):
+
+```bash
+uvicorn local_notes.server:app --reload --port 8000
+# then open http://127.0.0.1:8000/
+```
+
+In the header, use the gear icon for settings and the "Reindex" button to rebuild the index with a live progress overlay.
+
+4. (Optional) Ask from the CLI instead of the UI:
+
+```bash
+python -m local_notes.cli ask "summarize my postgres setup steps" --k 6
+# Streaming is on by default. Use --no-stream for a single final answer.
 ```
 
 ## Architecture
@@ -84,13 +123,13 @@ flowchart TD
   A[Apple Notes] -- AppleScript --> B[DataSource]
   B --> C[Documents (id, title, text, metadata)]
   C --> D[SemanticChunker]
-  D --> E[CachedEmbeddings -> HF Embeddings]
-  E --> F[FAISS Index + Metadata (doc_id, chunk_id, ...)]
+  D --> E[CachedEmbeddings → HF Embeddings]
+  E --> F[FAISS Index + Metadata (doc_id, chunk_id, …)]
 
   subgraph Server
     G[Service: Hybrid Retrieval + Prompt Builder]
     H[LLM Provider: Ollama/OpenAI]
-    I[Citers: sources/citations events]
+    I[Citations: sources/citations events]
   end
 
   F --> G
@@ -165,12 +204,13 @@ uvicorn local_notes.server:app --reload --port 8000
 # then open http://127.0.0.1:8000/
 ```
 
-Web UI highlights:
+Web UI highlights (Chat view):
 - **Streaming** assistant messages with **live citations**; chips show snippet on hover.
 - **Click chips** to expand full snippet inline; **Copy** snippet.
 - **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
 - **Settings** gear toggles controls (Provider, Model, Top K).
 - **Prefer Recent** slider biases retrieval toward newer chunks.
+- **Reindex** button shows a progress overlay with phases (Scan, Plan, Fetch, Embed, Save). You can Cancel while running.
 - **Conversations** auto-saved; citations persisted with stable IDs.
 
 ## Local LLM with Ollama
@@ -200,7 +240,7 @@ export OLLAMA_MODEL=gemma2
 
 ## API Endpoints
 
-Served by FastAPI when you run `uvicorn`:
+Served by FastAPI when you run `uvicorn` (see examples in [Quick Start](#quick-start)):
 
 - `GET /` – Web UI (served static)
 - `GET /search` – Search with hybrid retrieval
@@ -210,6 +250,7 @@ Served by FastAPI when you run `uvicorn`:
 - `POST /conv` – Create conversation `{ id, title }`
 - `GET /conv/{id}/messages` – Get messages (oldest→newest)
 - `POST /conv/{id}/ask/stream` – SSE streaming tied to a conversation; persists user + assistant with citations
+- `POST /index/stream` – SSE stream for indexing progress (used by Web UI Reindex overlay)
 - `GET /conv/{id}/export` – Export conversation + messages
 - `POST /conv/import` – Import conversation
 - `DELETE /conv/{id}` – Delete conversation
@@ -227,8 +268,11 @@ export OPENAI_API_KEY=sk-...
 
 # Optional: choose a different index directory by default (used in examples)
 # Not strictly required since the CLI always accepts --store-dir
+
+# Recency bias default (0.0–1.0) used by hybrid retrieval when UI slider is not provided
+export LOCAL_NOTES_RECENCY_ALPHA=0.1
 ```
-```
+
 
 ## OpenAI (optional)
 
