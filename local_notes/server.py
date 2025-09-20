@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .service import search_index, ask_question
 from .service import stream_answer, stream_answer_with_history
+from .agents.qwen_agent_runner import stream_qwen_agent
 from .storage.conversations import ConversationDB
 from .datasources.apple_notes import AppleNotesIncremental
 from .indexing.pipeline import build_index
@@ -78,7 +79,7 @@ def search(
     max_chars: int = Query(300, ge=50, le=2000),
 ):
     try:
-        results = search_index(q, store_dir=store_dir, embed_model=embed_model, k=k, max_chars=max_chars)
+        results = search_index(query=q, store_dir=store_dir, embed_model=embed_model, k=k, max_chars=max_chars)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return [
@@ -145,6 +146,60 @@ def ask_stream(req: AskRequest):
             # data may be multiline; SSE supports repeating data: lines, but we keep it single-line JSON/text
             yield f"data: {data}\n\n"
 
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+class QwenAgentAskRequest(BaseModel):
+    question: str
+    k: int = 6
+    provider: str = "ollama_openai"
+    llm_model: Optional[str] = None
+    max_tool_iters: int = 3
+
+
+@app.post("/qwen-agent/ask/stream")
+def qwen_agent_ask_stream(req: QwenAgentAskRequest):
+    def event_gen():
+        for ev, data in stream_qwen_agent(
+            question=req.question,
+            provider=req.provider,
+            llm_model=req.llm_model,
+            max_tool_iters=req.max_tool_iters,
+        ):
+            # SSE: emit one event header, then one data: line per logical line in payload
+            yield f"event: {ev}\n"
+            # ensure 'data:' prefix per line to avoid accidental delimiter collisions
+            for line in (str(data).splitlines() or [""]):
+                yield f"data: {line}\n"
+            yield "\n"
+        # Ensure done if underlying generator didn't emit it
+        yield "event: done\n"
+        yield "data: \n\n"
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+class AgentAskRequest(BaseModel):
+    question: str
+    k: int = 6
+    provider: str = "ollama_openai"
+    llm_model: Optional[str] = None
+    embed_model: str = DEFAULT_EMBED_MODEL
+    store_dir: str = DEFAULT_STORE
+    max_tool_iters: int = 3
+
+
+@app.post("/agent/ask/stream")
+def agent_ask_stream(req: AgentAskRequest):
+    def event_gen():
+        for ev, data in stream_agent(
+            question=req.question,
+            provider=req.provider,
+            llm_model=req.llm_model,
+            store_dir=req.store_dir,
+            embed_model=req.embed_model,
+            max_tool_iters=req.max_tool_iters,
+        ):
+            yield f"event: {ev}\n"
+            yield f"data: {data}\n\n"
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 

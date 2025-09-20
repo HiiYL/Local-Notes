@@ -7,6 +7,7 @@
   const kEl = document.getElementById('k');
   const providerEl = document.getElementById('provider');
   const llmModelEl = document.getElementById('llmModel');
+  const agentModeEl = document.getElementById('agentMode');
   const convListEl = document.getElementById('conversations');
   const newConvBtn = document.getElementById('newConv');
   const settingsToggle = document.getElementById('settingsToggle');
@@ -43,6 +44,9 @@
     if (typeof saved.recency === 'number') {
       recencyEl.value = String(saved.recency);
       recencyValEl.textContent = `${saved.recency}%`;
+    }
+    if (typeof saved.agentMode === 'boolean' && agentModeEl) {
+      agentModeEl.checked = !!saved.agentMode;
     }
 
   function truncateUiAfter(mid) {
@@ -113,7 +117,7 @@
   }
   } catch {}
   function saveSettings() {
-    const s = { k: Number(kEl.value||'6'), provider: providerEl.value||'ollama', llmModel: llmModelEl.value||'', recency: Number(recencyEl.value||'10') };
+    const s = { k: Number(kEl.value||'6'), provider: providerEl.value||'ollama', llmModel: llmModelEl.value||'', recency: Number(recencyEl.value||'10'), agentMode: agentModeEl ? !!agentModeEl.checked : false };
     localStorage.setItem('ln_settings', JSON.stringify(s));
   }
 
@@ -121,10 +125,14 @@
   function normalizeMd(text) {
     if (!text) return '';
     let t = text;
-    // Ensure a newline before list markers if they follow text without a break: "text:* item" => "text:\n* item"
+    // Ensure a newline before list markers if they follow text without a break: "text:* item" => "text\n* item"
     t = t.replace(/(:)\s*\*/g, '$1\n*');
     // Also support dashes as list markers
     t = t.replace(/(:)\s*-\s+/g, '$1\n- ');
+    // Numbered list markers: split inline sequences like "1. foo 2. bar" into separate lines
+    t = t.replace(/([^\n])\s+(\d+\.\s+)/g, '$1\n$2');
+    // If a numbered item follows non-blank text directly, insert a blank line for better paragraph separation
+    t = t.replace(/([^\n])\n(\d+\.\s+)/g, '$1\n\n$2');
     // Ensure headings start on new lines: "text## Heading" or "text ## Heading" => "text\n\n## Heading"
     t = t.replace(/([^\n])\s*(#{1,6}\s+)/g, '$1\n\n$2');
     // Trim extra spaces before heading markers at line starts
@@ -159,6 +167,7 @@
   kEl.addEventListener('change', saveSettings);
   providerEl.addEventListener('change', saveSettings);
   llmModelEl.addEventListener('change', saveSettings);
+  agentModeEl && agentModeEl.addEventListener('change', saveSettings);
 
   function uuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -457,22 +466,37 @@
     const q = input.value.trim();
     if (!q) return;
     currentQuestion = q;
-    if (!currentConv) await createConversation();
+    const agentMode = agentModeEl ? !!agentModeEl.checked : false;
+    if (!agentMode) {
+      if (!currentConv) await createConversation();
+    }
     appendMessage('user', q, false);
     input.value = '';
     statusEl.textContent = 'Thinking…';
     sendBtn.disabled = true;
     stopBtn.classList.remove('hidden');
 
-    const body = {
-      question: q,
-      k: Number(kEl.value || '6'),
-      provider: providerEl.value || 'ollama',
-      llm_model: llmModelEl.value || null,
-      recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
-    };
-
-    const streamUrl = `/conv/${currentConv}/ask/stream`;
+    let body;
+    let streamUrl;
+    if (agentMode) {
+      body = {
+        question: q,
+        k: Number(kEl.value || '6'),
+        // Force OpenAI-compatible provider for agent tool-calls via Ollama
+        provider: 'ollama_openai',
+        llm_model: llmModelEl.value || null,
+      };
+      streamUrl = `/qwen-agent/ask/stream`;
+    } else {
+      body = {
+        question: q,
+        k: Number(kEl.value || '6'),
+        provider: providerEl.value || 'ollama',
+        llm_model: llmModelEl.value || null,
+        recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
+      };
+      streamUrl = `/conv/${currentConv}/ask/stream`;
+    }
     const es = new EventSourcePolyfill(streamUrl, {
       headers: { 'Content-Type': 'application/json' },
       method: 'POST',
@@ -486,6 +510,28 @@
     typing.className = 'typing';
     typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
     assistantBubble.appendChild(typing);
+    // agent trace container (only visible in Agent Mode)
+    let traceContainer = null;
+    // agent tools chip row
+    let toolsRow = null;
+    // map of thinking line elements by id
+    let thinkingLines = {};
+    if (agentMode) {
+      traceContainer = document.createElement('div');
+      traceContainer.className = 'agent-trace';
+      traceContainer.style.fontSize = '12px';
+      traceContainer.style.color = 'var(--muted)';
+      traceContainer.style.margin = '6px 0';
+      traceContainer.textContent = 'Agent running…';
+      assistantBubble.insertBefore(traceContainer, typing);
+      toolsRow = document.createElement('div');
+      toolsRow.className = 'agent-tools';
+      toolsRow.style.display = 'flex';
+      toolsRow.style.flexWrap = 'wrap';
+      toolsRow.style.gap = '6px';
+      toolsRow.style.margin = '4px 0';
+      assistantBubble.insertBefore(toolsRow, traceContainer.nextSibling);
+    }
     // attach sources chips on sources event
     const srcContainer = assistantBubble.querySelector('.sources');
     const attachSources = (arr) => {
@@ -509,6 +555,115 @@
       // Initially show all, will be replaced by 'citations' when available
       try { attachSources(JSON.parse(ev.data||'[]')); } catch {}
     });
+    if (agentMode) {
+      es.addEventListener('tool', (ev) => {
+        try {
+          const d = JSON.parse(ev.data||'{}');
+          if (traceContainer) {
+            const line = document.createElement('div');
+            line.textContent = `Tool: ${d.name || ''} ${d.args ? JSON.stringify(d.args) : ''}`.trim();
+            traceContainer.appendChild(line);
+          }
+          statusEl.textContent = `Tool: ${d.name || ''}`;
+          // Also add a visual chip
+          if (toolsRow) {
+            const key = `${d.name}|${JSON.stringify(d.args||{})}`;
+            // de-duplicate
+            let exists = toolsRow.querySelector(`[data-key="${key}"]`);
+            if (!exists) {
+              const chip = document.createElement('span');
+              chip.className = 'tool-chip';
+              chip.setAttribute('data-key', key);
+              chip.textContent = `${d.name}`;
+              chip.title = d.args ? JSON.stringify(d.args) : '';
+              chip.style.padding = '2px 6px';
+              chip.style.border = '1px solid var(--muted)';
+              chip.style.borderRadius = '10px';
+              chip.style.fontSize = '11px';
+              toolsRow.appendChild(chip);
+            }
+          }
+        } catch {}
+      });
+      es.addEventListener('thinking_start', (ev) => {
+        if (typing && typing.parentElement) { typing.remove(); typing = null; }
+        if (!traceContainer) return;
+        const id = (ev.data || '').trim() || String(Date.now());
+        const line = document.createElement('div');
+        line.className = 'thinking-line';
+        line.style.whiteSpace = 'pre-wrap';
+        line.style.opacity = '0.75';
+        line.setAttribute('data-id', id);
+        // small label to distinguish parallel thoughts
+        const label = document.createElement('span');
+        label.textContent = `Thinking #${id}: `;
+        label.style.fontWeight = '600';
+        label.style.opacity = '0.8';
+        line.appendChild(label);
+        const span = document.createElement('span');
+        span.className = 'thinking-content';
+        line.appendChild(span);
+        traceContainer.appendChild(line);
+        thinkingLines[id] = span;
+      });
+      es.addEventListener('thinking', (ev) => {
+        // Stream incremental thinking chunks into the appropriate trace line
+        if (typing && typing.parentElement) { typing.remove(); typing = null; }
+        if (!traceContainer) return;
+        let payload = null;
+        try { payload = JSON.parse(ev.data||''); } catch {}
+        if (payload && payload.id != null) {
+          const id = String(payload.id);
+          const target = thinkingLines[id];
+          if (target) {
+            target.textContent += (payload.text || '');
+          } else {
+            // late start fallback: create a line
+            const fakeEv = { data: id };
+            const evt = new Event('thinking_start');
+            // Manually create the line
+            const line = document.createElement('div');
+            line.className = 'thinking-line';
+            line.style.whiteSpace = 'pre-wrap';
+            line.style.opacity = '0.75';
+            line.setAttribute('data-id', id);
+            const label = document.createElement('span');
+            label.textContent = `Thinking #${id}: `;
+            label.style.fontWeight = '600';
+            label.style.opacity = '0.8';
+            line.appendChild(label);
+            const span = document.createElement('span');
+            span.className = 'thinking-content';
+            line.appendChild(span);
+            traceContainer.appendChild(line);
+            thinkingLines[id] = span;
+            span.textContent += (payload.text || '');
+          }
+        } else {
+          // Fallback to single-line behavior
+          let last = traceContainer.lastElementChild;
+          if (!last || !last.classList.contains('thinking-line')) {
+            last = document.createElement('div');
+            last.className = 'thinking-line';
+            last.style.whiteSpace = 'pre-wrap';
+            last.style.opacity = '0.75';
+            traceContainer.appendChild(last);
+          }
+          last.textContent += (ev.data || '');
+        }
+      });
+      es.addEventListener('thinking_end', (ev) => {
+        const id = (ev.data || '').trim();
+        if (!id) return;
+        const el = traceContainer && traceContainer.querySelector(`.thinking-line[data-id="${id}"]`);
+        if (el) {
+          el.style.opacity = '0.6';
+          el.style.borderLeft = '3px solid var(--muted)';
+          el.style.paddingLeft = '6px';
+        }
+        delete thinkingLines[id];
+      });
+    }
     es.addEventListener('citations', (ev) => {
       // Replace with cited-only sources
       try { attachSources(JSON.parse(ev.data||'[]')); } catch {}

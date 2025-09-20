@@ -122,8 +122,8 @@ def _hybrid_retrieve(vs: FAISS, store_dir: str, query: str, k: int, fetch_k: int
 
 def search_index(
     query: str,
-    store_dir: str,
-    embed_model: str,
+    store_dir: str = './data/index',
+    embed_model: str = 'sentence-transformers/all-MiniLM-L6-v2',
     k: int = 5,
     max_chars: int = 300,
 ) -> List[Dict[str, Any]]:
