@@ -32,7 +32,7 @@
   let currentQuestion = '';
   // Configure markdown rendering
   try {
-    marked.setOptions({ gfm: true, breaks: true, smartLists: true });
+    marked.setOptions({ gfm: true, breaks: true, smartLists: true, headerIds: false, mangle: false });
   } catch {}
   // Load settings
   try {
@@ -44,6 +44,18 @@
       recencyEl.value = String(saved.recency);
       recencyValEl.textContent = `${saved.recency}%`;
     }
+
+  function truncateUiAfter(mid) {
+    const target = Number(mid);
+    const nodes = Array.from(messagesEl.children);
+    for (const el of nodes) {
+      const idAttr = el.getAttribute('data-mid');
+      const idNum = idAttr ? Number(idAttr) : NaN;
+      if (!Number.isNaN(idNum) && idNum > target) {
+        el.remove();
+      }
+    }
+  }
 
   // --- Indexing overlay logic ---
   let indexStream = null;
@@ -117,10 +129,14 @@
     t = t.replace(/([^\n])\s*(#{1,6}\s+)/g, '$1\n\n$2');
     // Trim extra spaces before heading markers at line starts
     t = t.replace(/\n\s+(#{1,6}\s+)/g, '\n$1');
+    // Also fix heading at start-of-string
+    t = t.replace(/^\s+(#{1,6}\s+)/, '$1');
     // Add paragraph break between sentence endings and next capitalized sentence when missing space/newline
     t = t.replace(/([.!?])([A-Z])/g, '$1\n\n$2');
     // If list markers appear mid-line without newline, insert it
     t = t.replace(/([^\n])\s+(\*|-)\s+/g, '$1\n$2 ');
+    // If content starts with a list marker but has leading spaces, trim them
+    t = t.replace(/^\s+(\*|-)\s+/m, '$1 ');
     // Compact multiple blank lines
     t = t.replace(/\n{3,}/g, '\n\n');
     return t;
@@ -156,11 +172,31 @@
     const items = await resp.json();
     convListEl.innerHTML = '';
     items.forEach(c => {
-      const div = document.createElement('div');
-      div.className = 'conv-item' + (currentConv === c.id ? ' active' : '');
-      div.textContent = c.title;
-      div.onclick = () => selectConversation(c.id);
-      convListEl.appendChild(div);
+      const row = document.createElement('div');
+      row.className = 'conv-item' + (currentConv === c.id ? ' active' : '');
+      const title = document.createElement('span');
+      title.textContent = c.title;
+      title.style.flex = '1';
+      title.onclick = () => selectConversation(c.id);
+      const del = document.createElement('button');
+      del.className = 'secondary';
+      del.textContent = 'Delete';
+      del.title = 'Delete conversation';
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this conversation?')) return;
+        await fetch(`/conv/${c.id}`, { method: 'DELETE' });
+        // refresh list
+        await listConversations();
+        // pick first
+        const r = await fetch('/conv');
+        const arr = await r.json();
+        if (arr.length) selectConversation(arr[0].id); else { currentConv = null; messagesEl.innerHTML=''; }
+      };
+      row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px';
+      row.appendChild(title);
+      row.appendChild(del);
+      convListEl.appendChild(row);
     });
   }
 
@@ -190,6 +226,19 @@
     const msgs = await resp.json();
     msgs.forEach(m => {
       const bubble = appendMessage(m.role, m.content, m.role === 'assistant');
+      bubble.setAttribute('data-mid', String(m.id));
+      if (m.role === 'user') {
+        // add small toolbar for edit/reset
+        const tb = document.createElement('div');
+        tb.className = 'assistant-toolbar';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'secondary';
+        editBtn.title = 'Edit & re-run from here';
+        editBtn.textContent = '✎';
+        editBtn.addEventListener('click', () => startEditMessage(bubble, m));
+        tb.appendChild(editBtn);
+        bubble.insertBefore(tb, bubble.firstChild);
+      }
       if (m.role === 'assistant') {
         const srcContainer = bubble.querySelector('.sources');
         if (srcContainer) {
@@ -228,6 +277,103 @@
       }
     });
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function startEditMessage(bubble, m) {
+    const md = bubble.querySelector('.markdown');
+    const existing = md ? md.textContent : (bubble.textContent || '');
+    // replace content with textarea and save/cancel
+    const editor = document.createElement('textarea');
+    editor.value = m.content;
+    editor.style.width = '100%';
+    editor.rows = Math.min(8, Math.max(3, m.content.split('\n').length));
+    const actions = document.createElement('div');
+    actions.className = 'snippet-actions';
+    const save = document.createElement('button'); save.textContent = 'Save & Re-run'; save.className = 'secondary';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.className = 'secondary';
+    const contentHost = md || bubble;
+    const original = contentHost.innerHTML;
+    contentHost.innerHTML = '';
+    contentHost.appendChild(editor);
+    contentHost.appendChild(actions);
+    actions.appendChild(save); actions.appendChild(cancel);
+    save.addEventListener('click', async () => {
+      // 1) Save edited content
+      await fetch(`/conv/${currentConv}/message/${m.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: editor.value })});
+      // 2) Truncate after this message
+      await fetch(`/conv/${currentConv}/truncate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ upto_id: m.id })});
+      // 3) Immediately trim UI after this message for a seamless experience
+      truncateUiAfter(m.id);
+      // 4) Refresh UI so the edited message is visible and toolbar restored
+      await loadMessages();
+      // 5) Re-run assistant from here without adding a new user bubble
+      currentQuestion = editor.value;
+      await runFromHere(editor.value);
+    });
+    cancel.addEventListener('click', () => {
+      contentHost.innerHTML = original;
+    });
+  }
+
+  async function runFromHere(question) {
+    statusEl.textContent = 'Thinking…';
+    sendBtn.disabled = true;
+    stopBtn.classList.remove('hidden');
+
+    const body = {
+      question,
+      k: Number(kEl.value || '6'),
+      provider: providerEl.value || 'ollama',
+      llm_model: llmModelEl.value || null,
+      recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
+    };
+
+    const streamUrl = `/conv/${currentConv}/ask/stream`;
+    const es = new EventSourcePolyfill(streamUrl, {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      payload: JSON.stringify(body),
+    });
+    currentStream = es;
+
+    // create only assistant bubble
+    let assistantBubble = appendMessage('assistant', '', false);
+    let typing = document.createElement('div');
+    typing.className = 'typing';
+    typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+    assistantBubble.appendChild(typing);
+    const srcContainer = assistantBubble.querySelector('.sources');
+    const attachSources = (arr) => {
+      if (!srcContainer) return;
+      srcContainer.innerHTML = '';
+      (arr||[]).forEach(s => {
+        const chip = document.createElement('span');
+        chip.className = 'source-chip';
+        const chipLabel = `[${s.rank}] ${s.title || ''}` + (s.heading ? ` — ${s.heading}` : '');
+        chip.textContent = chipLabel.trim();
+        if (s.text) {
+          const snippet = String(s.text);
+          chip.title = snippet.length > 500 ? (snippet.slice(0, 500) + '…') : snippet;
+        }
+        chip.addEventListener('click', () => toggleSnippet(assistantBubble, s));
+        srcContainer.appendChild(chip);
+      });
+    };
+    es.addEventListener('sources', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
+    es.addEventListener('citations', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
+    es.addEventListener('delta', (ev) => { if (typing && typing.parentElement) { typing.remove(); typing = null; } updateStreamingBubble(assistantBubble, ev.data); });
+    es.addEventListener('done', async () => {
+      statusEl.textContent = '';
+      if (typing && typing.parentElement) { typing.remove(); typing = null; }
+      finalizeStreamingBubble(assistantBubble);
+      es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
+      // reload messages to reflect any DB updates
+      await loadMessages();
+    });
+    es.onerror = () => {
+      statusEl.textContent = 'Error during streaming';
+      es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
+    };
   }
 
   function appendMessage(role, content, renderMd=true) {
@@ -288,7 +434,9 @@
     const next = prev + (delta || '');
     md.setAttribute('data-buf', next);
     const cleaned = stripLeadingEcho(next);
-    md.innerHTML = DOMPurify.sanitize(marked.parse(normalizeMd(cleaned)));
+    let norm = normalizeMd(cleaned);
+    if (!norm.endsWith('\n')) norm += '\n';
+    md.innerHTML = DOMPurify.sanitize(marked.parse(norm));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -300,7 +448,9 @@
     md.removeAttribute('data-buf');
     // Ensure final render is set
     const cleaned = stripLeadingEcho(buf);
-    md.innerHTML = DOMPurify.sanitize(marked.parse(normalizeMd(cleaned)));
+    let norm = normalizeMd(cleaned);
+    if (!norm.endsWith('\n')) norm += '\n';
+    md.innerHTML = DOMPurify.sanitize(marked.parse(norm));
   }
 
   async function send() {

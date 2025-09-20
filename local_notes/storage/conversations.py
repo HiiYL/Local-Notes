@@ -93,5 +93,21 @@ class ConversationDB:
         "INSERT INTO messages (conv_id, role, content, created_at) VALUES (?, ?, ?, ?)",
         (conv_id, role, content, ts),
       )
+  
+  def truncate_after(self, conv_id: str, upto_id: int) -> None:
+    """Delete all messages with id greater than upto_id for this conversation."""
+    with self.lock, self.conn:
+      self.conn.execute(
+        "DELETE FROM messages WHERE conv_id=? AND id>?",
+        (conv_id, int(upto_id)),
+      )
+
+  def update_message_content(self, conv_id: str, mid: int, content: str) -> None:
+    """Update the content of an existing message in a thread-safe way."""
+    with self.lock, self.conn:
+      self.conn.execute(
+        "UPDATE messages SET content=? WHERE conv_id=? AND id=?",
+        (content, conv_id, int(mid)),
+      )
   def close(self):
     self.conn.close()

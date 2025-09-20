@@ -1,5 +1,7 @@
 # Local Notes: Privacy-Focused RAG for Apple Notes
 
+![Chat UI 1](images/app_screenshot.png)
+
 Local Notes is a private, local-first semantic search and Retrieval-Augmented Generation (RAG) tool for your Apple Notes. Notes are retrieved using AppleScript (no cloud). Text is embedded locally with SentenceTransformers and indexed with FAISS via LangChain for fast semantic queries. We use LangChain's SemanticChunker to split text into meaningful chunks.
 
 ## Table of Contents
@@ -115,69 +117,6 @@ At a high level, Local Notes consists of a data ingestion/indexing pipeline, a r
 - **Conversations store (`local_notes/storage/conversations.py`)**
   - SQLite DB with tables `conversations` and `messages`.
   - Saves assistant messages and citations (including `doc_id`, `chunk_id`).
-
-### Data Flow
-
-```mermaid
-flowchart TD
-  A[Apple Notes] -- AppleScript --> B[DataSource]
-  B --> C[Documents (id, title, text, metadata)]
-  C --> D[SemanticChunker]
-  D --> E[CachedEmbeddings → HF Embeddings]
-  E --> F[FAISS Index + Metadata (doc_id, chunk_id, …)]
-
-  subgraph Server
-    G[Service: Hybrid Retrieval + Prompt Builder]
-    H[LLM Provider: Ollama/OpenAI]
-    I[Citations: sources/citations events]
-  end
-
-  F --> G
-  G --> H
-  H --> G
-  G --> I
-
-  I --> J[FastAPI SSE / Web UI]
-  J --> K[Web Chat: messages, chips, expand/copy]
-  K --> L[SQLite Conversations (messages + citations)]
-```
-
-2. Index Apple Notes (with embedding cache & incremental updates):
-
-```bash
-python -m local_notes.cli index apple-notes --store-dir ./data/index
-# Incremental is on by default; use --no-incremental to force full rebuild
-# Only re-index notes modified since a given time:
-# python -m local_notes.cli index apple-notes --store-dir ./data/index --since "2025-09-01T00:00:00"
-```
-
-The first run will download an embedding model (~90MB) and ask macOS to allow Terminal to control Notes. Approve the prompt.
-
-3. Query your notes semantically (hybrid retrieval):
-
-```bash
-python -m local_notes.cli query "how to setup postgres" --store-dir ./data/index --k 5
-# Show longer snippets or hide text:
-# python -m local_notes.cli query "..." --max-chars 600
-# python -m local_notes.cli query "..." --no-show-text
-```
-
-4. Ask questions with RAG (LLM-generated, streaming by default):
-
-By default this uses a local LLM via Ollama (privacy-first). You can switch to OpenAI at any time.
-
-```bash
-# Local LLM with Ollama (default model: gemma2), streams tokens by default
-python -m local_notes.cli ask "summarize my postgres setup steps" --k 6
-
-# Choose a different local model (examples)
-python -m local_notes.cli ask "..." --llm-model gemma2:2b
-python -m local_notes.cli ask "..." --llm-model llama3.1
-
-# Use OpenAI (requires OPENAI_API_KEY)
-export OPENAI_API_KEY=...
-python -m local_notes.cli ask "..." --provider openai --llm-model gpt-4o-mini
-```
 
 ## Data Location
 Default index directory: `./data/index/`

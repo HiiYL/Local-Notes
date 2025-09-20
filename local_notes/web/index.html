@@ -17,6 +17,18 @@
         <button id="newConv" title="New conversation">＋</button>
       </div>
 
+  <!-- Confirm dialog overlay -->
+  <div id="confirmOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h3>Confirm</h3>
+      <div id="confirmText" style="margin:8px 0 12px;color:var(--muted)"></div>
+      <div class="ov-actions">
+        <button id="confirmCancel" class="secondary">Cancel</button>
+        <button id="confirmOk" class="secondary">OK</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Indexing progress overlay -->
   <div id="indexOverlay" class="overlay hidden">
     <div class="overlay-card">

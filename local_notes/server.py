@@ -372,6 +372,41 @@ def add_message(conv_id: str, req: AddMessageRequest):
     return Message(id=mid, role=req.role, content=req.content, created_at=ts)
 
 
+class EditMessageRequest(BaseModel):
+    content: str
+
+
+@app.patch("/conv/{conv_id}/message/{mid}", response_model=Message)
+def edit_message(conv_id: str, mid: int, req: EditMessageRequest):
+    # Simple edit: update content thread-safely; keep created_at as original
+    with conv_db.conn:  # type: ignore[attr-defined]
+        cur = conv_db.conn.execute(
+            "SELECT id, role, content, created_at FROM messages WHERE conv_id=? AND id=?",
+            (conv_id, mid),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Message not found")
+    conv_db.update_message_content(conv_id, mid, req.content)
+    with conv_db.conn:  # type: ignore[attr-defined]
+        cur = conv_db.conn.execute(
+            "SELECT id, role, content, created_at FROM messages WHERE conv_id=? AND id=?",
+            (conv_id, mid),
+        )
+        row2 = cur.fetchone()
+    return Message(id=mid, role=row2[1], content=row2[2], created_at=row2[3])  # type: ignore[index]
+
+
+class TruncateRequest(BaseModel):
+    upto_id: int
+
+
+@app.post("/conv/{conv_id}/truncate")
+def truncate_after(conv_id: str, req: TruncateRequest):
+    conv_db.truncate_after(conv_id, req.upto_id)
+    return {"ok": True}
+
+
 class ConvAskRequest(AskRequest):
     pass
 
@@ -380,9 +415,19 @@ class ConvAskRequest(AskRequest):
 def conv_ask_stream(conv_id: str, req: ConvAskRequest):
     import time
 
-    # Save user message first
+    # Save user message first, unless it's identical to the last user message (avoid duplication after edit+truncate)
     ts = int(time.time())
-    conv_db.add_message(conv_id, "user", req.question, ts)
+    try:
+        with conv_db.conn:  # type: ignore[attr-defined]
+            cur = conv_db.conn.execute(
+                "SELECT id, role, content FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT 1",
+                (conv_id,),
+            )
+            last = cur.fetchone()
+            if not last or not (last[1] == "user" and (last[2] or "") == (req.question or "")):
+                conv_db.add_message(conv_id, "user", req.question, ts)
+    except Exception:
+        conv_db.add_message(conv_id, "user", req.question, ts)
     # Auto-rename conversation to first question if default title
     conv = conv_db.get_conversation(conv_id)
     if conv and (conv.get("title") or "").strip() in ("", "New Conversation"):
