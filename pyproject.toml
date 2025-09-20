@@ -1,0 +1,39 @@
+[project]
+name = "local-notes"
+version = "0.1.0"
+description = "Privacy-focused RAG + LLM semantic retrieval for Apple Notes"
+authors = [{ name = "Local Notes" }]
+requires-python = ">=3.10"
+readme = "README.md"
+keywords = ["rag", "apple-notes", "semantic-search", "privacy", "local"]
+
+dependencies = [
+  "typer[all]>=0.12.3",
+  "rich>=13.7.1",
+  "tqdm>=4.66.4",
+  "beautifulsoup4>=4.12.3",
+  "lxml>=5.3.0",
+  "markdownify>=0.13.1",
+  "python-dateutil>=2.9.0.post0",
+  # LangChain + FAISS + HuggingFace embeddings + semantic chunker
+  "langchain>=0.2.14",
+  "langchain-community>=0.2.12",
+  "langchain-experimental>=0.3.4",
+  "langchain-huggingface>=0.0.3",
+  "langchain-text-splitters>=0.2.2",
+  "sentence-transformers>=5.1.0",
+  "faiss-cpu>=1.8.0.post1",
+]
+
+[tool.uv]
+managed = true
+
+[tool.uv.sources]
+
+[tool.uv.pip]
+# Enable universal wheels where possible
+compile-bytecode = true
+
+[tool.typer]
+# For nicer CLI help formatting when running via module
+color = true

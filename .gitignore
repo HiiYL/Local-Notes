@@ -1,0 +1,70 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments / Python version managers
+.venv/
+.env/
+.python-version
+
+# Build & packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test & tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Project data (indexes, caches)
+data/
+!data/.gitkeep
+
+# FAISS index artifacts (if you keep data/ committed, then uncomment below)
+# data/index/
+# data/index/index.faiss
+# data/index/index.pkl
+# data/notes.db
+
+# Logs
+logs/
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node (if any frontend is added later)
+node_modules/
+
+# Local caches
+*.cache/
+
+# Vector index artifacts (global safety if stored outside data/)
+*.faiss
+*.pkl
+*.bin
+*.idx
+*.ann
+*.hnsw
+*.jsonl
+*.sqlite
+*.db
+*.npy
+*.pt
