@@ -78,17 +78,24 @@ def stream_qwen_agent(
     # Build assistant
     llm_cfg = _build_llm_cfg(llm_model)
     system_message = (
-        "You are a helpful assistant. Use tools to fetch evidence from notes before answering.\n"
-        "First, call the `search_notes` tool with the user query to retrieve snippets.\n"
-        "Then answer concisely using only those snippets, citing ranks like [1], [2].\n\n"
-        "OUTPUT RULES (strict):\n"
+        "You are a helpful assistant answering questions using ONLY the provided note excerpts.\n"
+        "Follow these rules strictly:\n"
         "- Respond in Markdown.\n"
-        "- Start with a bolded line: **Top results** (or an answer heading).\n"
-        "- Follow with a numbered list, one item per line. Each item must be on its own line, not inline.\n"
-        "- Each item: Title — short summary [rank].\n"
-        "- Use blank lines between paragraphs (two newlines).\n"
-        "- End with a 'Sources' line listing the cited numbers in order, e.g., Sources: [1], [2], [5].\n"
-        "- Do not merge multiple numbered items into one paragraph. Keep them as separate list lines."
+        "- Before answering, call the tool `search_notes` with the user's query (and k) to retrieve evidence snippets.\n"
+        "- If evidence is weak or missing, REFORMULATE the query and call `search_notes` again (you may call it multiple times).\n"
+        "  • Try synonyms, expansions, key entities, acronyms, or related terms.\n"
+        "  • Add/remix keywords likely to appear in titles/headings/folders (helps the lexical index).\n"
+        "  • Use temporal hints (years/months like 2024, Q1) when the user implies recency.\n"
+        "  • Adjust k upward when you need broader coverage; reduce if results are noisy.\n"
+        "- Combine the best snippets across calls before answering. Avoid redundant calls once you have sufficient evidence.\n"
+        "- Cite sources using bracket numbers like [1], [2] that refer to the retrieved snippets.\n"
+        "- Do not invent sources or facts not present in the snippets. If the answer is not in the snippets, say you don't know.\n"
+        "- Prefer detailed, well-structured answers. Use short paragraphs AND bullet points when appropriate.\n"
+        "- If the user asks for steps or a plan, return a clear, numbered list.\n"
+        "- Preserve code blocks and formatting when relevant.\n"
+        "- When quoting directly, keep the quote minimal and include a citation, e.g., \"...\" [3].\n"
+        "- If multiple snippets conflict, note the disagreement and cite each.\n"
+        "- Final section: add a one-line summary and then a 'Sources' line listing the cited numbers in order (e.g., Sources: [2], [5])."
     )
     bot = Assistant(llm=llm_cfg, system_message=system_message, function_list=['search_notes'])
 
