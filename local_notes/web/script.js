@@ -7,6 +7,7 @@
   const kEl = document.getElementById('k');
   const providerEl = document.getElementById('provider');
   const llmModelEl = document.getElementById('llmModel');
+  const agentModeEl = document.getElementById('agentMode');
   const convListEl = document.getElementById('conversations');
   const newConvBtn = document.getElementById('newConv');
   const settingsToggle = document.getElementById('settingsToggle');
@@ -44,6 +45,18 @@
       recencyEl.value = String(saved.recency);
       recencyValEl.textContent = `${saved.recency}%`;
     }
+    if (agentModeEl) {
+      // Default ON if no saved preference
+      if (typeof saved.agentMode === 'boolean') {
+        agentModeEl.checked = !!saved.agentMode;
+      } else {
+        agentModeEl.checked = true;
+        // persist default for future loads
+        const s = JSON.parse(localStorage.getItem('ln_settings') || '{}');
+        s.agentMode = true;
+        localStorage.setItem('ln_settings', JSON.stringify(s));
+      }
+    }
 
   function truncateUiAfter(mid) {
     const target = Number(mid);
@@ -71,7 +84,55 @@
     ovEmbed.removeAttribute('max'); ovEmbed.value = 0; ovEmbedTxt.textContent = '';
     ovClose.classList.add('hidden'); ovCancel.classList.remove('hidden');
   }
-
+  function appendMessage(role, content, renderMd = true) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant');
+    if (role === 'assistant') {
+      // toolbar
+      const toolbar = document.createElement('div');
+      toolbar.className = 'assistant-toolbar';
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'secondary';
+      copyBtn.textContent = 'Copy Answer';
+      copyBtn.addEventListener('click', async () => {
+        const md = wrap.querySelector('.markdown');
+        try { await navigator.clipboard.writeText(md ? md.innerText : ''); copyBtn.textContent = 'Copied'; setTimeout(()=>copyBtn.textContent='Copy Answer', 1000);} catch {}
+      });
+      const expandAllBtn = document.createElement('button');
+      expandAllBtn.className = 'secondary';
+      expandAllBtn.textContent = 'Expand All';
+      expandAllBtn.addEventListener('click', () => {
+        const chips = wrap.querySelectorAll('.source-chip');
+        chips.forEach(ch => ch.click());
+      });
+      const collapseAllBtn = document.createElement('button');
+      collapseAllBtn.className = 'secondary';
+      collapseAllBtn.textContent = 'Collapse All';
+      collapseAllBtn.addEventListener('click', () => {
+        const container = wrap.querySelector('.snippets');
+        if (container) container.innerHTML = '';
+      });
+      toolbar.appendChild(copyBtn);
+      toolbar.appendChild(expandAllBtn);
+      toolbar.appendChild(collapseAllBtn);
+      wrap.appendChild(toolbar);
+      const md = document.createElement('div');
+      md.className = 'markdown';
+      md.innerHTML = renderMd ? DOMPurify.sanitize(marked.parse(content || '')) : '';
+      if (!renderMd) md.setAttribute('data-stream', '1');
+      wrap.appendChild(md);
+      const src = document.createElement('div');
+      src.className = 'sources';
+      wrap.appendChild(src);
+      const snippets = document.createElement('div');
+      snippets.className = 'snippets';
+      wrap.appendChild(snippets);
+    } else {
+      wrap.textContent = content;
+    }
+    messagesEl.appendChild(wrap);
+    return wrap;
+  }
   function startIndexing() {
     resetOverlay();
     openOverlay();
@@ -113,7 +174,7 @@
   }
   } catch {}
   function saveSettings() {
-    const s = { k: Number(kEl.value||'6'), provider: providerEl.value||'ollama', llmModel: llmModelEl.value||'', recency: Number(recencyEl.value||'10') };
+    const s = { k: Number(kEl.value||'6'), provider: providerEl.value||'ollama', llmModel: llmModelEl.value||'', recency: Number(recencyEl.value||'10'), agentMode: agentModeEl ? !!agentModeEl.checked : false };
     localStorage.setItem('ln_settings', JSON.stringify(s));
   }
 
@@ -121,10 +182,14 @@
   function normalizeMd(text) {
     if (!text) return '';
     let t = text;
-    // Ensure a newline before list markers if they follow text without a break: "text:* item" => "text:\n* item"
+    // Ensure a newline before list markers if they follow text without a break: "text:* item" => "text\n* item"
     t = t.replace(/(:)\s*\*/g, '$1\n*');
     // Also support dashes as list markers
     t = t.replace(/(:)\s*-\s+/g, '$1\n- ');
+    // Numbered list markers: split inline sequences like "1. foo 2. bar" into separate lines
+    t = t.replace(/([^\n])\s+(\d+\.\s+)/g, '$1\n$2');
+    // If a numbered item follows non-blank text directly, insert a blank line for better paragraph separation
+    t = t.replace(/([^\n])\n(\d+\.\s+)/g, '$1\n\n$2');
     // Ensure headings start on new lines: "text## Heading" or "text ## Heading" => "text\n\n## Heading"
     t = t.replace(/([^\n])\s*(#{1,6}\s+)/g, '$1\n\n$2');
     // Trim extra spaces before heading markers at line starts
@@ -159,6 +224,7 @@
   kEl.addEventListener('change', saveSettings);
   providerEl.addEventListener('change', saveSettings);
   llmModelEl.addEventListener('change', saveSettings);
+  agentModeEl && agentModeEl.addEventListener('change', saveSettings);
 
   function uuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -311,74 +377,110 @@
       await runFromHere(editor.value);
     });
     cancel.addEventListener('click', () => {
-      contentHost.innerHTML = original;
-    });
-  }
 
-  async function runFromHere(question) {
-    statusEl.textContent = 'Thinking…';
-    sendBtn.disabled = true;
-    stopBtn.classList.remove('hidden');
+// create only assistant bubble
+let assistantBubble = appendMessage('assistant', '', false);
+let typing = document.createElement('div');
+typing.className = 'typing';
+typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+assistantBubble.appendChild(typing);
+const srcContainer = assistantBubble.querySelector('.sources');
+const attachSources = (arr) => {
+if (!srcContainer) return;
+srcContainer.innerHTML = '';
+(arr||[]).forEach(s => {
+const chip = document.createElement('span');
+chip.className = 'source-chip';
+const chipLabel = `[${s.rank}] ${s.title || ''}` + (s.heading ? ` — ${s.heading}` : '');
+chip.textContent = chipLabel.trim();
+if (s.text) {
+const snippet = String(s.text);
+chip.title = snippet.length > 500 ? (snippet.slice(0, 500) + '…') : snippet;
+}
+chip.addEventListener('click', () => toggleSnippet(assistantBubble, s));
+srcContainer.appendChild(chip);
+});
+};
+es.addEventListener('sources', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
+es.addEventListener('citations', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
+es.addEventListener('delta', (ev) => { if (typing && typing.parentElement) { typing.remove(); typing = null; } updateStreamingBubble(assistantBubble, ev.data); });
+es.addEventListener('done', async () => {
+statusEl.textContent = '';
+if (typing && typing.parentElement) { typing.remove(); typing = null; }
+finalizeStreamingBubble(assistantBubble);
+es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
+// reload messages to reflect any DB updates
+await loadMessages();
+});
+es.onerror = () => {
+statusEl.textContent = 'Error during streaming';
+es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
+};
+});
+cancel.addEventListener('click', () => {
+contentHost.innerHTML = original;
+});
+}
 
-    const body = {
-      question,
-      k: Number(kEl.value || '6'),
-      provider: providerEl.value || 'ollama',
-      llm_model: llmModelEl.value || null,
-      recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
-    };
+async function runFromHere(question) {
+statusEl.textContent = 'Thinking…';
+sendBtn.disabled = true;
+stopBtn.classList.remove('hidden');
 
-    const streamUrl = `/conv/${currentConv}/ask/stream`;
-    const es = new EventSourcePolyfill(streamUrl, {
-      headers: { 'Content-Type': 'application/json' },
-      method: 'POST',
-      payload: JSON.stringify(body),
-    });
-    currentStream = es;
+const agentMode = agentModeEl ? !!agentModeEl.checked : false;
+let body;
+let streamUrl;
+if (agentMode) {
+body = {
+question,
+k: Number(kEl.value || '6'),
+provider: 'ollama_openai',
+llm_model: llmModelEl.value || null,
+conv_id: currentConv || null,
+};
+streamUrl = `/qwen-agent/ask/stream`;
+} else {
+body = {
+question,
+k: Number(kEl.value || '6'),
+provider: providerEl.value || 'ollama',
+llm_model: llmModelEl.value || null,
+recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
+};
+streamUrl = `/conv/${currentConv}/ask/stream`;
+}
+const es = new EventSourcePolyfill(streamUrl, {
+headers: { 'Content-Type': 'application/json' },
+method: 'POST',
+payload: JSON.stringify(body),
+});
+currentStream = es;
 
-    // create only assistant bubble
-    let assistantBubble = appendMessage('assistant', '', false);
-    let typing = document.createElement('div');
-    typing.className = 'typing';
-    typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
-    assistantBubble.appendChild(typing);
-    const srcContainer = assistantBubble.querySelector('.sources');
-    const attachSources = (arr) => {
-      if (!srcContainer) return;
-      srcContainer.innerHTML = '';
-      (arr||[]).forEach(s => {
-        const chip = document.createElement('span');
-        chip.className = 'source-chip';
-        const chipLabel = `[${s.rank}] ${s.title || ''}` + (s.heading ? ` — ${s.heading}` : '');
-        chip.textContent = chipLabel.trim();
-        if (s.text) {
-          const snippet = String(s.text);
-          chip.title = snippet.length > 500 ? (snippet.slice(0, 500) + '…') : snippet;
-        }
-        chip.addEventListener('click', () => toggleSnippet(assistantBubble, s));
-        srcContainer.appendChild(chip);
-      });
-    };
-    es.addEventListener('sources', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
-    es.addEventListener('citations', (ev) => { try { attachSources(JSON.parse(ev.data||'[]')); } catch {} });
-    es.addEventListener('delta', (ev) => { if (typing && typing.parentElement) { typing.remove(); typing = null; } updateStreamingBubble(assistantBubble, ev.data); });
-    es.addEventListener('done', async () => {
-      statusEl.textContent = '';
-      if (typing && typing.parentElement) { typing.remove(); typing = null; }
-      finalizeStreamingBubble(assistantBubble);
-      es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
-      // reload messages to reflect any DB updates
-      await loadMessages();
-    });
-    es.onerror = () => {
-      statusEl.textContent = 'Error during streaming';
-      es.close(); currentStream = null; sendBtn.disabled = false; stopBtn.classList.add('hidden');
-    };
-  }
+let assistantBubble = appendMessage('assistant', '', false);
+let typing = document.createElement('div');
+typing.className = 'typing';
+typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+assistantBubble.appendChild(typing);
 
-  function appendMessage(role, content, renderMd=true) {
-    const wrap = document.createElement('div');
-    wrap.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant');
+let traceContainer = null;
+let toolsRow = null;
+let thinkingLines = {};
+if (agentMode) {
+traceContainer = document.createElement('div');
+traceContainer.className = 'agent-trace';
+traceContainer.style.fontSize = '12px';
+traceContainer.style.color = 'var(--muted)';
+traceContainer.style.margin = '6px 0';
+traceContainer.textContent = 'Agent running…';
+assistantBubble.insertBefore(traceContainer, typing);
+toolsRow = document.createElement('div');
+toolsRow.className = 'agent-tools';
+toolsRow.style.display = 'flex';
+toolsRow.style.flexWrap = 'wrap';
+toolsRow.style.gap = '6px';
+toolsRow.style.margin = '4px 0';
+assistantBubble.insertBefore(toolsRow, traceContainer.nextSibling);
+}
     if (role === 'assistant') {
       // toolbar
       const toolbar = document.createElement('div');
@@ -457,22 +559,38 @@
     const q = input.value.trim();
     if (!q) return;
     currentQuestion = q;
-    if (!currentConv) await createConversation();
+    const agentMode = agentModeEl ? !!agentModeEl.checked : false;
+    if (!agentMode) {
+      if (!currentConv) await createConversation();
+    }
     appendMessage('user', q, false);
     input.value = '';
     statusEl.textContent = 'Thinking…';
     sendBtn.disabled = true;
     stopBtn.classList.remove('hidden');
 
-    const body = {
-      question: q,
-      k: Number(kEl.value || '6'),
-      provider: providerEl.value || 'ollama',
-      llm_model: llmModelEl.value || null,
-      recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
-    };
-
-    const streamUrl = `/conv/${currentConv}/ask/stream`;
+    let body;
+    let streamUrl;
+    if (agentMode) {
+      body = {
+        question: q,
+        k: Number(kEl.value || '6'),
+        // Force OpenAI-compatible provider for agent tool-calls via Ollama
+        provider: 'ollama_openai',
+        llm_model: llmModelEl.value || null,
+        conv_id: currentConv || null,
+      };
+      streamUrl = `/qwen-agent/ask/stream`;
+    } else {
+      body = {
+        question: q,
+        k: Number(kEl.value || '6'),
+        provider: providerEl.value || 'ollama',
+        llm_model: llmModelEl.value || null,
+        recency_alpha: Math.max(0, Math.min(1, Number(recencyEl.value || '10')/100)),
+      };
+      streamUrl = `/conv/${currentConv}/ask/stream`;
+    }
     const es = new EventSourcePolyfill(streamUrl, {
       headers: { 'Content-Type': 'application/json' },
       method: 'POST',
@@ -486,6 +604,28 @@
     typing.className = 'typing';
     typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
     assistantBubble.appendChild(typing);
+    // agent trace container (only visible in Agent Mode)
+    let traceContainer = null;
+    // agent tools chip row
+    let toolsRow = null;
+    // map of thinking line elements by id
+    let thinkingLines = {};
+    if (agentMode) {
+      traceContainer = document.createElement('div');
+      traceContainer.className = 'agent-trace';
+      traceContainer.style.fontSize = '12px';
+      traceContainer.style.color = 'var(--muted)';
+      traceContainer.style.margin = '6px 0';
+      traceContainer.textContent = 'Agent running…';
+      assistantBubble.insertBefore(traceContainer, typing);
+      toolsRow = document.createElement('div');
+      toolsRow.className = 'agent-tools';
+      toolsRow.style.display = 'flex';
+      toolsRow.style.flexWrap = 'wrap';
+      toolsRow.style.gap = '6px';
+      toolsRow.style.margin = '4px 0';
+      assistantBubble.insertBefore(toolsRow, traceContainer.nextSibling);
+    }
     // attach sources chips on sources event
     const srcContainer = assistantBubble.querySelector('.sources');
     const attachSources = (arr) => {
@@ -509,6 +649,115 @@
       // Initially show all, will be replaced by 'citations' when available
       try { attachSources(JSON.parse(ev.data||'[]')); } catch {}
     });
+    if (agentMode) {
+      es.addEventListener('tool', (ev) => {
+        try {
+          const d = JSON.parse(ev.data||'{}');
+          if (traceContainer) {
+            const line = document.createElement('div');
+            line.textContent = `Tool: ${d.name || ''} ${d.args ? JSON.stringify(d.args) : ''}`.trim();
+            traceContainer.appendChild(line);
+          }
+          statusEl.textContent = `Tool: ${d.name || ''}`;
+          // Also add a visual chip
+          if (toolsRow) {
+            const key = `${d.name}|${JSON.stringify(d.args||{})}`;
+            // de-duplicate
+            let exists = toolsRow.querySelector(`[data-key="${key}"]`);
+            if (!exists) {
+              const chip = document.createElement('span');
+              chip.className = 'tool-chip';
+              chip.setAttribute('data-key', key);
+              chip.textContent = `${d.name}`;
+              chip.title = d.args ? JSON.stringify(d.args) : '';
+              chip.style.padding = '2px 6px';
+              chip.style.border = '1px solid var(--muted)';
+              chip.style.borderRadius = '10px';
+              chip.style.fontSize = '11px';
+              toolsRow.appendChild(chip);
+            }
+          }
+        } catch {}
+      });
+      es.addEventListener('thinking_start', (ev) => {
+        if (typing && typing.parentElement) { typing.remove(); typing = null; }
+        if (!traceContainer) return;
+        const id = (ev.data || '').trim() || String(Date.now());
+        const line = document.createElement('div');
+        line.className = 'thinking-line';
+        line.style.whiteSpace = 'pre-wrap';
+        line.style.opacity = '0.75';
+        line.setAttribute('data-id', id);
+        // small label to distinguish parallel thoughts
+        const label = document.createElement('span');
+        label.textContent = `Thinking #${id}: `;
+        label.style.fontWeight = '600';
+        label.style.opacity = '0.8';
+        line.appendChild(label);
+        const span = document.createElement('span');
+        span.className = 'thinking-content';
+        line.appendChild(span);
+        traceContainer.appendChild(line);
+        thinkingLines[id] = span;
+      });
+      es.addEventListener('thinking', (ev) => {
+        // Stream incremental thinking chunks into the appropriate trace line
+        if (typing && typing.parentElement) { typing.remove(); typing = null; }
+        if (!traceContainer) return;
+        let payload = null;
+        try { payload = JSON.parse(ev.data||''); } catch {}
+        if (payload && payload.id != null) {
+          const id = String(payload.id);
+          const target = thinkingLines[id];
+          if (target) {
+            target.textContent += (payload.text || '');
+          } else {
+            // late start fallback: create a line
+            const fakeEv = { data: id };
+            const evt = new Event('thinking_start');
+            // Manually create the line
+            const line = document.createElement('div');
+            line.className = 'thinking-line';
+            line.style.whiteSpace = 'pre-wrap';
+            line.style.opacity = '0.75';
+            line.setAttribute('data-id', id);
+            const label = document.createElement('span');
+            label.textContent = `Thinking #${id}: `;
+            label.style.fontWeight = '600';
+            label.style.opacity = '0.8';
+            line.appendChild(label);
+            const span = document.createElement('span');
+            span.className = 'thinking-content';
+            line.appendChild(span);
+            traceContainer.appendChild(line);
+            thinkingLines[id] = span;
+            span.textContent += (payload.text || '');
+          }
+        } else {
+          // Fallback to single-line behavior
+          let last = traceContainer.lastElementChild;
+          if (!last || !last.classList.contains('thinking-line')) {
+            last = document.createElement('div');
+            last.className = 'thinking-line';
+            last.style.whiteSpace = 'pre-wrap';
+            last.style.opacity = '0.75';
+            traceContainer.appendChild(last);
+          }
+          last.textContent += (ev.data || '');
+        }
+      });
+      es.addEventListener('thinking_end', (ev) => {
+        const id = (ev.data || '').trim();
+        if (!id) return;
+        const el = traceContainer && traceContainer.querySelector(`.thinking-line[data-id="${id}"]`);
+        if (el) {
+          el.style.opacity = '0.6';
+          el.style.borderLeft = '3px solid var(--muted)';
+          el.style.paddingLeft = '6px';
+        }
+        delete thinkingLines[id];
+      });
+    }
     es.addEventListener('citations', (ev) => {
       // Replace with cited-only sources
       try { attachSources(JSON.parse(ev.data||'[]')); } catch {}

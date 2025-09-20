@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .service import search_index, ask_question
 from .service import stream_answer, stream_answer_with_history
+from .agents.qwen_agent_runner import stream_qwen_agent
 from .storage.conversations import ConversationDB
 from .datasources.apple_notes import AppleNotesIncremental
 from .indexing.pipeline import build_index
@@ -78,7 +79,7 @@ def search(
     max_chars: int = Query(300, ge=50, le=2000),
 ):
     try:
-        results = search_index(q, store_dir=store_dir, embed_model=embed_model, k=k, max_chars=max_chars)
+        results = search_index(query=q, store_dir=store_dir, embed_model=embed_model, k=k, max_chars=max_chars)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return [
@@ -145,6 +146,103 @@ def ask_stream(req: AskRequest):
             # data may be multiline; SSE supports repeating data: lines, but we keep it single-line JSON/text
             yield f"data: {data}\n\n"
 
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+class QwenAgentAskRequest(BaseModel):
+    question: str
+    k: int = 6
+    provider: str = "ollama_openai"
+    llm_model: Optional[str] = None
+    max_tool_iters: int = 3
+    conv_id: str
+
+
+def _persist_user_and_title(conv_id: str, question: str):
+    import time
+    ts = int(time.time())
+    try:
+        with conv_db.conn:  # type: ignore[attr-defined]
+            cur = conv_db.conn.execute(
+                "SELECT id, role, content FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT 1",
+                (conv_id,),
+            )
+            last = cur.fetchone()
+            if not last or not (last[1] == "user" and (last[2] or "") == (question or "")):
+                conv_db.add_message(conv_id, "user", question, ts)
+    except Exception:
+        conv_db.add_message(conv_id, "user", question, ts)
+
+    # Auto-title conversation if still default
+    conv = conv_db.get_conversation(conv_id)
+    if conv and (conv.get("title") or "").strip() in ("", "New Conversation"):
+        title = question.strip()
+        if len(title) > 60:
+            title = title[:60] + "…"
+        conv_db.update_title(conv_id, title, ts)
+
+
+def _wrap_stream_and_persist(conv_id: str, inner):
+    collected: List[str] = []
+    citations_json: Optional[str] = None
+    for ev, data in inner:
+        if ev == "delta":
+            collected.append(data)
+        elif ev == "citations":
+            citations_json = data
+        yield f"event: {ev}\n"
+        for line in (str(data).splitlines() or [""]):
+            yield f"data: {line}\n"
+        yield "\n"
+    # Persist assistant message BEFORE final done
+    full = "".join(collected)
+    conv_db.add_message(conv_id, "assistant", full, int(time.time()), citations_json=citations_json)
+    yield "event: done\n"
+    yield "data: \n\n"
+
+
+@app.post("/qwen-agent/ask/stream")
+def qwen_agent_ask_stream(req: QwenAgentAskRequest):
+    # Save user and title
+    _persist_user_and_title(req.conv_id, req.question)
+
+    inner = stream_qwen_agent(
+        question=req.question,
+        provider=req.provider,
+        llm_model=req.llm_model,
+        max_tool_iters=req.max_tool_iters,
+    )
+
+    def event_gen():
+        # Agent mode: wrapper handles delta/citations/done and forwards all events (tool/thinking/etc.)
+        yield from _wrap_stream_and_persist(req.conv_id, inner)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+class AgentAskRequest(BaseModel):
+    question: str
+    k: int = 6
+    provider: str = "ollama_openai"
+    llm_model: Optional[str] = None
+    embed_model: str = DEFAULT_EMBED_MODEL
+    store_dir: str = DEFAULT_STORE
+    max_tool_iters: int = 3
+
+
+@app.post("/agent/ask/stream")
+def agent_ask_stream(req: AgentAskRequest):
+    def event_gen():
+        for ev, data in stream_agent(
+            question=req.question,
+            provider=req.provider,
+            llm_model=req.llm_model,
+            store_dir=req.store_dir,
+            embed_model=req.embed_model,
+            max_tool_iters=req.max_tool_iters,
+        ):
+            yield f"event: {ev}\n"
+            yield f"data: {data}\n\n"
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
@@ -407,16 +505,10 @@ def truncate_after(conv_id: str, req: TruncateRequest):
     return {"ok": True}
 
 
-class ConvAskRequest(AskRequest):
-    pass
-
-
-@app.post("/conv/{conv_id}/ask/stream")
-def conv_ask_stream(conv_id: str, req: ConvAskRequest):
-    import time
-
-    # Save user message first, unless it's identical to the last user message (avoid duplication after edit+truncate)
-    ts = int(time.time())
+# --- Unified conversation helpers ---
+def _persist_user_and_title(conv_id: str, question: str, ts: Optional[int] = None) -> None:
+    import time as _time
+    ts = ts or int(_time.time())
     try:
         with conv_db.conn:  # type: ignore[attr-defined]
             cur = conv_db.conn.execute(
@@ -424,54 +516,80 @@ def conv_ask_stream(conv_id: str, req: ConvAskRequest):
                 (conv_id,),
             )
             last = cur.fetchone()
-            if not last or not (last[1] == "user" and (last[2] or "") == (req.question or "")):
-                conv_db.add_message(conv_id, "user", req.question, ts)
+            if not last or not (last[1] == "user" and (last[2] or "") == (question or "")):
+                conv_db.add_message(conv_id, "user", question, ts)
     except Exception:
-        conv_db.add_message(conv_id, "user", req.question, ts)
-    # Auto-rename conversation to first question if default title
+        conv_db.add_message(conv_id, "user", question, ts)
+
     conv = conv_db.get_conversation(conv_id)
     if conv and (conv.get("title") or "").strip() in ("", "New Conversation"):
-        title = req.question.strip()
+        title = (question or "").strip()
         if len(title) > 60:
             title = title[:60] + "…"
         conv_db.update_title(conv_id, title, ts)
 
+
+def _wrap_stream_and_persist(conv_id: str, inner_stream):
+    """Yield SSE from inner_stream; capture deltas and citations; persist assistant before done."""
+    import time as _time
+    collected: List[str] = []
+    citations_json: Optional[str] = None
+    for ev, data in inner_stream:
+        if ev == "delta":
+            collected.append(str(data))
+        elif ev == "citations":
+            citations_json = str(data)
+        # Forward event to client with proper SSE framing
+        yield f"event: {ev}\n"
+        for line in (str(data).splitlines() or [""]):
+            yield f"data: {line}\n"
+        yield "\n"
+    # Persist assistant before signaling done
+    full = "".join(collected)
+    conv_db.add_message(conv_id, "assistant", full, int(_time.time()), citations_json=citations_json)
+    yield "event: done\n"
+    yield "data: \n\n"
+
+
+class ConvAskRequest(AskRequest):
+    pass
+
+
+@app.post("/conv/{conv_id}/ask/stream")
+def conv_ask_stream(conv_id: str, req: ConvAskRequest):
+    # Save user and title
+    _persist_user_and_title(conv_id, req.question)
+
+    # Build recent history for better coherence
+    history = conv_db.get_messages(conv_id, limit=50)
+    inner = stream_answer_with_history(
+        question=req.question,
+        history=history,
+        store_dir=req.store_dir,
+        embed_model=req.embed_model,
+        k=req.k,
+        provider=req.provider,
+        llm_model=req.llm_model,
+        recency_alpha=(req.recency_alpha if req.recency_alpha is not None else 0.1),
+    )
+
     def event_gen():
-        # Build recent history for better coherence
-        history = conv_db.get_messages(conv_id, limit=50)
-        # stream answer and at the end save assistant message
-        collected = []
-        citations_json: Optional[str] = None
-        for ev, data in stream_answer_with_history(
-            question=req.question,
-            history=history,
-            store_dir=req.store_dir,
-            embed_model=req.embed_model,
-            k=req.k,
-            provider=req.provider,
-            llm_model=req.llm_model,
-            recency_alpha=(req.recency_alpha if req.recency_alpha is not None else 0.1),
-        ):
-            if ev == "delta":
-                collected.append(data)
-                yield f"event: {ev}\n"
+        # Classic mode: still forward 'sources' immediately; wrapper handles delta/citations/done
+        for ev, data in inner:
+            if ev == "sources":
+                yield f"event: sources\n"
                 yield f"data: {data}\n\n"
-            elif ev == "sources":
-                # pass through sources immediately
-                yield f"event: {ev}\n"
-                yield f"data: {data}\n\n"
-            elif ev == "citations":
-                # cited-only sources
-                citations_json = data
-                yield f"event: {ev}\n"
-                yield f"data: {data}\n\n"
-            elif ev == "done":
-                # persist assistant message BEFORE notifying client 'done'
-                full = "".join(collected)
-                conv_db.add_message(conv_id, "assistant", full, int(time.time()), citations_json=citations_json)
-                yield f"event: done\n"
-                yield f"data: \n\n"
-        # generator end
+            else:
+                # Re-use unified wrapper by re-injecting this (ev,data) and the rest
+                def _rejoin():
+                    # first yield the current ev
+                    yield (ev, data)
+                    for item in inner:
+                        yield item
+                yield from _wrap_stream_and_persist(conv_id, _rejoin())
+                return
+        # If inner yielded nothing, still finalize
+        yield from _wrap_stream_and_persist(conv_id, [])
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
