@@ -6,7 +6,7 @@
   
 </p>
 
-Chat with your notes locally using FAISS + Whoosh (RRF) and a local (Ollama) or cloud LLM. 
+Chat with your notes locally using FAISS + Whoosh (RRF) and a local (Ollama) or cloud LLM.
 Local Notes is a private, local-first semantic search and Retrieval-Augmented Generation (RAG) tool for your Apple Notes. Notes are retrieved using AppleScript (no cloud). Text is embedded locally with SentenceTransformers and indexed with FAISS via LangChain for fast semantic queries. We use LangChain's SemanticChunker to split text into meaningful chunks.
 
 ## Table of Contents
@@ -28,6 +28,7 @@ Local Notes is a private, local-first semantic search and Retrieval-Augmented Ge
 No data leaves your machine.
 
 ## Features
+
 - **Apple Notes source** via AppleScript (no account credentials needed)
 - **Local embeddings** with `sentence-transformers` (LangChain `HuggingFaceEmbeddings`)
 - **FAISS semantic search** (LangChain)
@@ -46,6 +47,7 @@ No data leaves your machine.
 - **Extensible datasources**
 
 ## Requirements
+
 - macOS with Apple Notes app
 - Python 3.10+
 - `uv` for dependency management (install: `curl -LsSf https://astral.sh/uv/install.sh | sh` and restart shell)
@@ -127,19 +129,23 @@ At a high level, Local Notes consists of a data ingestion/indexing pipeline, a r
   - Saves assistant messages and citations (including `doc_id`, `chunk_id`).
 
 ## Data Location
+
 Default index directory: `./data/index/`
 
 Files created:
+
 - `index.faiss` – FAISS index
 - `index.pkl` – LangChain store metadata
 - `emb_cache.sqlite` – SQLite embedding cache keyed by (model, md5(content))
 
 Conversations database (web UI):
+
 - `./data/conversations.db`
 
 Delete these to reset state.
 
 ## Extending Data Sources
+
 Implement `local_notes.datasources.base.DataSource` and register in the CLI. See `local_notes/datasources/apple_notes.py` for a reference implementation.
 
 ## Web UI
@@ -154,17 +160,18 @@ uvicorn local_notes.server:app --reload --port 8000
 ```
 
 Web UI highlights (Chat view):
-  - **Streaming** assistant messages with **live citations**; chips show snippet on hover.
-  - **Click chips** to expand full snippet inline; **Copy** snippet.
-  - **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
-  - **Agent Mode** (default ON):
-    - Tool calls surface as trace lines and chips.
-    - Thinking timeline streams incremental thoughts.
-    - Source chips are shown only when actually cited in the answer.
-  - **Settings** gear toggles controls (Provider, Model, Top K).
-  - **Prefer Recent** slider biases retrieval toward newer chunks.
-  - **Reindex** button shows a progress overlay with phases (Scan, Plan, Fetch, Embed, Save). You can Cancel while running.
-  - **Conversations** auto-saved; citations persisted with stable IDs.
+
+- **Streaming** assistant messages with **live citations**; chips show snippet on hover.
+- **Click chips** to expand full snippet inline; **Copy** snippet.
+- **Assistant toolbar** on each answer: Copy Answer, Expand All, Collapse All.
+- **Agent Mode** (default ON):
+  - Tool calls surface as trace lines and chips.
+  - Thinking timeline streams incremental thoughts.
+  - Source chips are shown only when actually cited in the answer.
+- **Settings** gear toggles controls (Provider, Model, Top K).
+- **Prefer Recent** slider biases retrieval toward newer chunks.
+- **Reindex** button shows a progress overlay with phases (Scan, Plan, Fetch, Embed, Save). You can Cancel while running.
+- **Conversations** auto-saved; citations persisted with stable IDs.
 
 ## Local LLM with Ollama
 
@@ -188,7 +195,7 @@ python -m local_notes.cli ask "..."
 
 You can override the default with `--llm-model` or set an env var:
 
-```bash
+````bash
 export OLLAMA_MODEL=gemma2
 
 ## API Endpoints
@@ -224,19 +231,19 @@ export OPENAI_API_KEY=sk-...
 
 # Recency bias default (0.0–1.0) used by hybrid retrieval when UI slider is not provided
 export LOCAL_NOTES_RECENCY_ALPHA=0.1
-```
-
+````
 
 ## OpenAI (optional)
 
 To use OpenAI for the `ask` command:
 
 ```bash
-export OPENAI_API_KEY=... 
+export OPENAI_API_KEY=...
 python -m local_notes.cli ask "..." --provider openai --llm-model gpt-4o-mini
 ```
 
 ## Troubleshooting
+
 - **AppleScript returns 0 notes**
   - Open the Notes app once manually and ensure you have at least one account with notes.
   - Check Automation permissions: System Settings > Privacy & Security > Automation. Allow your Terminal/IDE to control Notes.
@@ -288,18 +295,21 @@ Listing Apple Notes metadata...
 Notes needing body fetch: 609
 Upserting 609 notes into index...
 ⠇ Notes  ━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━ 209/609  0:01:20 0:02:24
-⠇ Chunks ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 275/None 0:01:20        
+⠇ Chunks ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 275/None 0:01:20
 ```
 
 Progress includes:
+
 - Notes processed
 - Chunks embedded (benefits from the embedding cache)
 - Elapsed/remaining time (estimates)
 
 ## Security & Privacy
+
 - All processing is local.
 - No telemetry.
 - You control the index files.
 
 ## License
+
 MIT

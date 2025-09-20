@@ -1,84 +1,127 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Local Notes</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <!-- Markdown renderers -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-</head>
-<body>
-  <div class="app">
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h1>Local Notes</h1>
-        <button id="newConv" title="New conversation">＋</button>
-      </div>
-
-  <!-- Confirm dialog overlay -->
-  <div id="confirmOverlay" class="overlay hidden">
-    <div class="overlay-card">
-      <h3>Confirm</h3>
-      <div id="confirmText" style="margin:8px 0 12px;color:var(--muted)"></div>
-      <div class="ov-actions">
-        <button id="confirmCancel" class="secondary">Cancel</button>
-        <button id="confirmOk" class="secondary">OK</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Indexing progress overlay -->
-  <div id="indexOverlay" class="overlay hidden">
-    <div class="overlay-card">
-      <h3>Rebuilding Index</h3>
-      <div class="ov-row"><span>Scan</span><progress id="ovScan" value="0" max="0"></progress><span id="ovScanTxt"></span></div>
-      <div class="ov-row"><span>Plan</span><progress id="ovPlan" value="0" max="1"></progress><span id="ovPlanTxt"></span></div>
-      <div class="ov-row"><span>Fetch</span><progress id="ovFetch" value="0" max="1"></progress><span id="ovFetchTxt"></span></div>
-      <div class="ov-row"><span>Embed</span><progress id="ovEmbed" value="0"></progress><span id="ovEmbedTxt"></span></div>
-      <div class="ov-actions">
-        <button id="ovCancel" class="secondary">Cancel</button>
-        <button id="ovClose" class="secondary hidden">Close</button>
-      </div>
-    </div>
-  </div>
-      <div id="conversations" class="conv-list"></div>
-    </aside>
-    <section class="chat">
-      <div class="chat-header">
-        <div class="controls-inline" id="controlsInline">
-          <label>Top K <input id="k" type="number" min="1" max="20" value="6" /></label>
-          <label>Provider
-            <select id="provider">
-              <option value="ollama" selected>ollama</option>
-              <option value="openai">openai</option>
-            </select>
-          </label>
-          <label>Model <input id="llmModel" type="text" placeholder="(default)" /></label>
-          <label>Prefer Recent
-            <input id="recency" type="range" min="0" max="100" value="10" />
-            <span id="recencyVal">10%</span>
-          </label>
-          <label>
-            <input id="agentMode" type="checkbox" /> Agent Mode
-          </label>
-          <span id="status"></span>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Notes</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <!-- Markdown renderers -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>Local Notes</h1>
+          <button id="newConv" title="New conversation">＋</button>
         </div>
-        <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-          <button id="reindexBtn" class="secondary" title="Rebuild index">Reindex</button>
-          <button id="settingsToggle" class="secondary" title="Toggle settings">⚙️</button>
-        </div>
-      </div>
-      <div id="messages" class="messages"></div>
-      <div class="composer">
-        <textarea id="input" rows="1" placeholder="Ask about your notes…"></textarea>
-        <button id="send">Send</button>
-        <button id="stop" class="secondary hidden" title="Stop streaming">Stop</button>
-      </div>
-    </section>
-  </div>
 
-  <script src="/static/script.js"></script>
-</body>
+        <!-- Confirm dialog overlay -->
+        <div id="confirmOverlay" class="overlay hidden">
+          <div class="overlay-card">
+            <h3>Confirm</h3>
+            <div
+              id="confirmText"
+              style="margin: 8px 0 12px; color: var(--muted)"
+            ></div>
+            <div class="ov-actions">
+              <button id="confirmCancel" class="secondary">Cancel</button>
+              <button id="confirmOk" class="secondary">OK</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Indexing progress overlay -->
+        <div id="indexOverlay" class="overlay hidden">
+          <div class="overlay-card">
+            <h3>Rebuilding Index</h3>
+            <div class="ov-row">
+              <span>Scan</span
+              ><progress id="ovScan" value="0" max="0"></progress
+              ><span id="ovScanTxt"></span>
+            </div>
+            <div class="ov-row">
+              <span>Plan</span
+              ><progress id="ovPlan" value="0" max="1"></progress
+              ><span id="ovPlanTxt"></span>
+            </div>
+            <div class="ov-row">
+              <span>Fetch</span
+              ><progress id="ovFetch" value="0" max="1"></progress
+              ><span id="ovFetchTxt"></span>
+            </div>
+            <div class="ov-row">
+              <span>Embed</span><progress id="ovEmbed" value="0"></progress
+              ><span id="ovEmbedTxt"></span>
+            </div>
+            <div class="ov-actions">
+              <button id="ovCancel" class="secondary">Cancel</button>
+              <button id="ovClose" class="secondary hidden">Close</button>
+            </div>
+          </div>
+        </div>
+        <div id="conversations" class="conv-list"></div>
+      </aside>
+      <section class="chat">
+        <div class="chat-header">
+          <div class="controls-inline" id="controlsInline">
+            <label
+              >Top K <input id="k" type="number" min="1" max="20" value="6"
+            /></label>
+            <label
+              >Provider
+              <select id="provider">
+                <option value="ollama" selected>ollama</option>
+                <option value="openai">openai</option>
+              </select>
+            </label>
+            <label
+              >Model <input id="llmModel" type="text" placeholder="(default)"
+            /></label>
+            <label
+              >Prefer Recent
+              <input id="recency" type="range" min="0" max="100" value="10" />
+              <span id="recencyVal">10%</span>
+            </label>
+            <label> <input id="agentMode" type="checkbox" /> Agent Mode </label>
+            <span id="status"></span>
+          </div>
+          <div
+            style="
+              margin-left: auto;
+              display: flex;
+              gap: 8px;
+              align-items: center;
+            "
+          >
+            <button id="reindexBtn" class="secondary" title="Rebuild index">
+              Reindex
+            </button>
+            <button
+              id="settingsToggle"
+              class="secondary"
+              title="Toggle settings"
+            >
+              ⚙️
+            </button>
+          </div>
+        </div>
+        <div id="messages" class="messages"></div>
+        <div class="composer">
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Ask about your notes…"
+          ></textarea>
+          <button id="send">Send</button>
+          <button id="stop" class="secondary hidden" title="Stop streaming">
+            Stop
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <script src="/static/script.js"></script>
+  </body>
 </html>
